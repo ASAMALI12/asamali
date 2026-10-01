@@ -25,7 +25,7 @@ const ai = apiKey
 // API endpoint for processing app generation / modification via Gemini
 app.post('/api/gemini/modify-app', async (req, res) => {
   try {
-    const { prompt, currentApp, zipCoreContext } = req.body;
+    const { prompt, currentApp, zipCoreContext, conversationContext } = req.body;
 
     if (!prompt) {
       return res.status(400).json({ error: 'Prompt is required' });
@@ -41,9 +41,18 @@ app.post('/api/gemini/modify-app', async (req, res) => {
     }
 
     const systemInstruction = `
-You are an expert AI Mobile App Engine and UI/UX compiler.
-The user speaks to you (often in Arabic or English) to create or live-modify a mobile app that renders directly inside a phone simulator.
-The user might ask for color changes ("ضع هذا اللون أحمر/أزرق"), button redesigns ("غير هذا الزر"), screen additions, data changes, or building an entirely new app concept.
+You are the ASAMALI Intelligent Mobile App Compiler and Architect.
+The user speaks to you (in Arabic or English) to create or live-modify a mobile application that renders inside an interactive phone simulator.
+
+Capabilities:
+1. Understand compound, natural language instructions (e.g. "أنشئ تطبيق مطعم يحتوي على قائمة أطعمة وسلة طلبات وصفحة تأكيد الطلب", or "أضف شاشة تسجيل دخول إلى المشروع", or "غير لون الزر السابق إلى أحمر").
+2. Create complete screens inside "app.screens" object (e.g. "home", "login", "cart", "confirm", "profile", "explore", "details").
+3. Update "app.navigation.tabs" to include all relevant screens so the user can navigate between them.
+4. Set "app.navigation.activeTab" to the newly created or most relevant screen so it immediately renders on screen.
+5. Create or modify custom buttons, items, banners, themes, search bars, and categories.
+6. Delete elements or screens ONLY when the user explicitly asks to delete or remove them ("احذف", "امسح", "ازل").
+7. Retain the context of the current project and previous actions.
+8. Strictly consult and utilize the provided Smart Core ZIP Engine context (recipes, templates, and libraries) to align with best mobile design patterns.
 
 Current App State JSON:
 ${JSON.stringify(currentApp || {}, null, 2)}
@@ -51,24 +60,33 @@ ${JSON.stringify(currentApp || {}, null, 2)}
 Smart Core ZIP Engine Context:
 ${JSON.stringify(zipCoreContext || {}, null, 2)}
 
+Conversation & Memory Context:
+${JSON.stringify(conversationContext || {}, null, 2)}
+
 User Request: "${prompt}"
 
-Return ONLY a valid JSON object with the updated application configuration matching this schema:
+Return ONLY a valid JSON object matching this schema:
 {
-  "speechReply": "Short friendly Arabic response explaining what was created or changed (1 sentence)",
-  "actionTaken": "Brief tag like 'theme_color_change' | 'button_update' | 'new_app_generated' | 'component_added'",
+  "speechReply": "Clear, friendly Arabic response explaining exactly what was planned, created or updated in 1-2 sentences",
+  "actionTaken": "Brief intent tag like 'create_restaurant_app' | 'add_login_screen' | 'modify_element' | 'delete_element' | 'theme_update'",
+  "executionPlan": [
+    "Step 1: description in Arabic",
+    "Step 2: description in Arabic",
+    "Step 3: description in Arabic"
+  ],
   "app": {
     "id": "string",
     "name": "App Name in Arabic",
-    "category": "e.g. ecommerce | social | delivery | fitness | booking | finance | custom",
+    "category": "restaurant | ecommerce | chat | delivery | finance | fitness | custom",
+    "isBuilt": true,
     "theme": {
-      "primaryColor": "hex color code (e.g. #3B82F6)",
-      "secondaryColor": "hex color code (e.g. #10B981)",
-      "accentColor": "hex color code (e.g. #F59E0B)",
-      "bgColor": "hex or tailwind color (e.g. #0F172A)",
-      "textColor": "hex color (e.g. #F8FAFC)",
-      "cardBg": "hex color (e.g. #1E293B)",
-      "borderRadius": "rounded-none | rounded-lg | rounded-2xl | rounded-3xl | rounded-full",
+      "primaryColor": "hex color (e.g. #DC2626 or #3B82F6 or #10B981)",
+      "secondaryColor": "hex color",
+      "accentColor": "hex color",
+      "bgColor": "#0A0A0A or #0F172A",
+      "textColor": "#FAFAFA",
+      "cardBg": "#171717 or #1E293B",
+      "borderRadius": "rounded-2xl | rounded-3xl | rounded-full",
       "fontFamily": "Cairo, sans-serif",
       "isDark": true
     },
@@ -76,56 +94,56 @@ Return ONLY a valid JSON object with the updated application configuration match
       "title": "Title on phone header",
       "showBack": false,
       "tabs": [
-        { "id": "home", "label": "الرئيسية", "icon": "Home" },
-        { "id": "explore", "label": "استكشاف", "icon": "Compass" },
-        { "id": "cart", "label": "السلة", "icon": "ShoppingBag" },
-        { "id": "profile", "label": "حسابي", "icon": "User" }
+        { "id": "screen_key", "label": "اسم التبويب", "icon": "Home | ShoppingBag | CheckCircle2 | User | MessageSquare | Flame | Search" }
       ],
-      "activeTab": "home"
+      "activeTab": "id of the screen to display now"
     },
     "screens": {
-      "home": {
-        "title": "اسم الصفحة",
-        "headerSubtitle": "وصف لطيف",
+      "screen_key": {
+        "title": "عنوان الشاشة",
+        "headerSubtitle": "وصف توضيحي",
         "banner": {
           "title": "عنوان البانر",
-          "subtitle": "عرض حصري اليوم",
-          "buttonText": "اكتشف الآن",
-          "gradient": "from-indigo-600 to-purple-600"
+          "subtitle": "وصف البانر",
+          "buttonText": "زر البانر",
+          "gradient": "from-red-600 to-amber-600"
         },
         "searchPlaceholder": "ابحث هنا...",
         "categories": [
-          { "id": "c1", "label": "الأكثر طلباً", "icon": "Flame" },
-          { "id": "c2", "label": "عروض خاصة", "icon": "Percent" },
-          { "id": "c3", "label": "جديدنا", "icon": "Sparkles" }
+          { "id": "c1", "label": "تصنيف", "icon": "Flame" }
         ],
         "items": [
           {
             "id": "item-1",
-            "title": "اسم العنصر الأول",
-            "subtitle": "وصف موجز للمنتج أو الخدمة",
-            "price": "49.00 ر.س",
+            "title": "اسم العنصر أو الحقل",
+            "subtitle": "وصف العنصر أو التفاصيل",
+            "price": "السعر أو القيمة إن وجدت",
             "rating": 4.9,
-            "tag": "شائع",
+            "tag": "وسم مميز",
             "imageEmoji": "🍔"
           }
         ],
         "actionButton": {
-          "text": "زر العمل الرئيسي",
-          "color": "#3B82F6",
-          "actionType": "primary"
+          "text": "زر الإجراء الأساسي للشاشة",
+          "color": "hex color",
+          "actionType": "action_id"
         }
       }
     },
     "customButton": {
       "id": "floating-action",
-      "text": "اطلب الآن",
-      "bgColor": "#3B82F6",
+      "text": "نص الزر التفاعلي",
+      "bgColor": "hex color",
       "textColor": "#FFFFFF",
       "shape": "rounded-full",
       "icon": "Zap",
-      "action": "trigger_order"
-    }
+      "action": "trigger_action",
+      "glow": true
+    },
+    "hasCustomButton": true,
+    "showSearch": true,
+    "showBanner": true,
+    "cartCount": 0
   }
 }
 `;
@@ -140,7 +158,25 @@ Return ONLY a valid JSON object with the updated application configuration match
     });
 
     const text = response.text || '{}';
-    const parsed = JSON.parse(text);
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch (parseErr) {
+      console.warn('Gemini response was not valid JSON, using local engine fallback', text);
+      return res.json({
+        success: false,
+        useLocalEngine: true,
+        message: 'Model response required parsing correction; local engine will handle.',
+      });
+    }
+
+    if (!parsed || !parsed.app || !parsed.app.screens) {
+      return res.json({
+        success: false,
+        useLocalEngine: true,
+        message: 'Model response lacked required schema; local engine will handle.',
+      });
+    }
 
     return res.json({
       success: true,
@@ -148,8 +184,9 @@ Return ONLY a valid JSON object with the updated application configuration match
     });
   } catch (error: any) {
     console.error('Error generating app with Gemini:', error);
-    return res.status(500).json({
+    return res.json({
       success: false,
+      useLocalEngine: true,
       error: error.message || 'Internal server error',
     });
   }

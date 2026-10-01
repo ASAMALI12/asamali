@@ -1,6 +1,14 @@
 import { MobileAppConfig, AppTheme, CustomButtonConfig } from '../types';
 import { queryZipCore } from './zipEngine';
-import { executeAsamaliPipeline } from './asamaliCoreEngine';
+import { 
+  executeAsamaliPipeline, 
+  validateAndRepairApp, 
+  getEngineContext, 
+  saveEngineContext, 
+  getEngineMemory, 
+  saveEngineMemory, 
+  LearningItem 
+} from './asamaliCoreEngine';
 
 export const INITIAL_EMPTY_APP: MobileAppConfig = {
   id: 'fresh_app',
@@ -623,7 +631,7 @@ export function normalizeArabicSpeech(text: string): string {
 
 /**
  * Intelligent Synthesis Engine
- * Directly executes user instructions through the ASAMALI Core Pipeline
+ * Directly executes user instructions through the unified Gemini + ASAMALI Core Pipeline
  */
 export async function processAppModification(
   prompt: string,
@@ -635,11 +643,88 @@ export async function processAppModification(
   actionTaken: string;
   diffInfo: string;
 }> {
-  const result = executeAsamaliPipeline(prompt, currentApp, zipCore);
+  // 1. Query ZIP Core to extract actual relevant files and recipes
+  const zipQueryResult = zipCore?.isLoaded ? queryZipCore(prompt, zipCore) : null;
+  const conversationContext = getEngineContext();
+
+  let updatedApp: MobileAppConfig | null = null;
+  let replyText = '';
+  let actionTaken = '';
+  let diffInfo = '';
+
+  // 2. Attempt smart server-side reasoning via Gemini if available
+  try {
+    const res = await fetch('/api/gemini/modify-app', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        prompt,
+        currentApp,
+        zipCoreContext: {
+          isLoaded: zipCore?.isLoaded,
+          fileName: zipCore?.fileName,
+          matchedFiles: zipQueryResult?.matchedFiles || [],
+          snippet: zipQueryResult?.snippet || '',
+          manifest: zipCore?.manifest,
+          customLibraries: zipCore?.customLibraries,
+        },
+        conversationContext,
+      }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.data && data.data.app) {
+        // Validate and auto-repair Gemini output to guarantee flawless UI consistency
+        const validation = validateAndRepairApp(data.data.app);
+        updatedApp = validation.app;
+        replyText = data.data.speechReply || 'تم تنفيذ طلبك بنجاح على مشروعك!';
+        actionTaken = data.data.actionTaken || 'gemini_intelligence';
+        diffInfo = `تنفيذ ذكي عبر Gemini مدعوماً بنواة: ${zipCore?.fileName || 'النواة الذكية'}`;
+
+        // Save into persistent engine context
+        conversationContext.conversationTurns.unshift({
+          user: prompt,
+          action: actionTaken,
+          timestamp: new Date().toISOString(),
+        });
+        conversationContext.activeProjectName = updatedApp.name;
+        saveEngineContext(conversationContext);
+
+        const memoryItem: LearningItem = {
+          id: `learn_${Date.now()}`,
+          timestamp: new Date().toISOString(),
+          prompt,
+          normalizedTokens: prompt.split(/\s+/),
+          resolvedIntent: actionTaken,
+          matchedCoreFiles: zipQueryResult?.matchedFiles || ['ASAMALI/brain/lexicon_ar.json'],
+          status: 'executed',
+          executionPlan: data.data.executionPlan || ['تحليل الطلب', 'تعديل ملفات المشروع', 'فحص السلامة'],
+        };
+        const curMem = getEngineMemory();
+        curMem.unshift(memoryItem);
+        saveEngineMemory(curMem);
+      }
+    }
+  } catch (err) {
+    console.warn('Server Gemini call failed, falling back seamlessly to ASAMALI Core Engine:', err);
+  }
+
+  // 3. Fallback to Local ASAMALI Core Pipeline (guarantees 100% offline & local reliability)
+  if (!updatedApp) {
+    const localResult = executeAsamaliPipeline(prompt, currentApp, zipCore);
+    updatedApp = localResult.updatedApp;
+    replyText = localResult.replyText;
+    actionTaken = localResult.resolvedIntent;
+    diffInfo = `تنفيذ حقيقي عبر ملفات النواة: ${localResult.matchedFiles.slice(0, 3).join(' | ')}`;
+  }
+
   return {
-    updatedApp: result.updatedApp,
-    replyText: result.replyText,
-    actionTaken: result.resolvedIntent,
-    diffInfo: `تنفيذ حقيقي عبر ملفات النواة: ${result.matchedFiles.join(' | ')}`
+    updatedApp,
+    replyText,
+    actionTaken,
+    diffInfo,
   };
 }
