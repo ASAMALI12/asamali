@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ASAM</string>
+    <string name="title_activity_main">ASAM</string>
+    <string name="package_name">com.asamali.smartcore</string>
+    <string name="custom_url_scheme">com.asamali.smartcore</string>
+</resources>

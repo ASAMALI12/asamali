@@ -1,0 +1,10 @@
+{
+  "name": "Smart Core App Studio",
+  "description": "منصة تفاعلية متطورة لبناء وتعديل تطبيقات الهاتف فورياً بالصوت والدردشة ونواة ملفات ZIP الذكية",
+  "requestFramePermissions": [
+    "MICROPHONE"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

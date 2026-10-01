@@ -1,0 +1,8 @@
+{
+  "appId": "com.asamali.smartcore",
+  "appName": "ASAM",
+  "webDir": "dist",
+  "android": {
+    "allowMixedContent": true
+  }
+}
