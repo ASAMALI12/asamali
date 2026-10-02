@@ -7,7 +7,8 @@ import {
   saveEngineContext, 
   getEngineMemory, 
   saveEngineMemory, 
-  LearningItem 
+  LearningItem,
+  analyzeUserIntent 
 } from './asamaliCoreEngine';
 
 export const INITIAL_EMPTY_APP: MobileAppConfig = {
@@ -643,18 +644,38 @@ export async function processAppModification(
   actionTaken: string;
   diffInfo: string;
 }> {
-  // 1. Query ZIP Core to extract actual relevant files and recipes
-  const zipQueryResult = zipCore?.isLoaded ? queryZipCore(prompt, zipCore) : null;
   const conversationContext = getEngineContext();
+  
+  // 1. INTENT ROUTER CHECK
+  const route = analyzeUserIntent(prompt, currentApp, conversationContext);
+
+  // If the intent is non-actionable (CHAT, PROJECT_QUESTION, DEBUG, UNKNOWN):
+  // DO NOT alter the project state or files!
+  if (!route.isActionable) {
+    const localResult = executeAsamaliPipeline(prompt, currentApp, zipCore);
+    return {
+      updatedApp: localResult.updatedApp, // completely untouched
+      replyText: localResult.replyText,
+      actionTaken: localResult.resolvedIntent,
+      diffInfo: localResult.resolvedIntent === 'CHAT' ? 'محادثة حوارية ذكية' : 'فحص تحليلي للمشروع'
+    };
+  }
+
+  // 2. Query ZIP Core to extract actual relevant files and recipes
+  const zipQueryResult = zipCore?.isLoaded ? queryZipCore(prompt, zipCore) : null;
 
   let updatedApp: MobileAppConfig | null = null;
   let replyText = '';
   let actionTaken = '';
   let diffInfo = '';
 
-  // 2. Attempt smart server-side reasoning via Gemini if available
+  // 3. Attempt smart server-side reasoning via Gemini if available
   try {
-    const res = await fetch('/api/gemini/modify-app', {
+    const apiUrl = typeof window !== 'undefined' 
+      ? '/api/gemini/modify-app' 
+      : 'http://127.0.0.1:3000/api/gemini/modify-app';
+
+    const res = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -671,20 +692,19 @@ export async function processAppModification(
           customLibraries: zipCore?.customLibraries,
         },
         conversationContext,
+        detectedIntent: route.intent
       }),
     });
 
     if (res.ok) {
       const data = await res.json();
       if (data.success && data.data && data.data.app) {
-        // Validate and auto-repair Gemini output to guarantee flawless UI consistency
         const validation = validateAndRepairApp(data.data.app);
         updatedApp = validation.app;
         replyText = data.data.speechReply || 'تم تنفيذ طلبك بنجاح على مشروعك!';
-        actionTaken = data.data.actionTaken || 'gemini_intelligence';
+        actionTaken = data.data.actionTaken || route.intent;
         diffInfo = `تنفيذ ذكي عبر Gemini مدعوماً بنواة: ${zipCore?.fileName || 'النواة الذكية'}`;
 
-        // Save into persistent engine context
         conversationContext.conversationTurns.unshift({
           user: prompt,
           action: actionTaken,
@@ -712,7 +732,7 @@ export async function processAppModification(
     console.warn('Server Gemini call failed, falling back seamlessly to ASAMALI Core Engine:', err);
   }
 
-  // 3. Fallback to Local ASAMALI Core Pipeline (guarantees 100% offline & local reliability)
+  // 4. Fallback to Local ASAMALI Core Pipeline (guarantees 100% offline & local reliability)
   if (!updatedApp) {
     const localResult = executeAsamaliPipeline(prompt, currentApp, zipCore);
     updatedApp = localResult.updatedApp;

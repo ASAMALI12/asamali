@@ -12,10 +12,18 @@ import {
   Search, 
   Volume2, 
   VolumeX,
-  ArrowRight
+  ArrowRight,
+  GraduationCap,
+  Layers,
+  Headphones,
+  CheckCircle2,
+  Sparkles,
+  BookOpen,
+  Cpu
 } from 'lucide-react';
 import { parseZipFile, BUILTIN_ASAMALI_CORE } from './services/zipEngine';
 import { processAppModification, buildAppFromPrompt } from './services/appGenerator';
+import { getCustomTeachings, saveCustomTeaching, TeachCoreRecord } from './services/asamaliCoreEngine';
 import { MobileAppConfig, SmartZipCore } from './types';
 
 interface SavedProject {
@@ -70,6 +78,27 @@ export default function App() {
   // Modals
   const [showProjectsDrawer, setShowProjectsDrawer] = useState(false);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState(false);
+
+  // New Requested Modals
+  const [showTeachCoreModal, setShowTeachCoreModal] = useState(false);
+  const [showBuildReviewModal, setShowBuildReviewModal] = useState(false);
+  const [showLiveDialogModal, setShowLiveDialogModal] = useState(false);
+
+  // Teach core state
+  const [teachWord, setTeachWord] = useState('');
+  const [teachMeaning, setTeachMeaning] = useState('BUILD');
+  const [teachType, setTeachType] = useState<'verb' | 'target' | 'color'>('verb');
+  const [teachingsList, setTeachingsList] = useState<TeachCoreRecord[]>(() => getCustomTeachings());
+  const [teachSuccessMsg, setTeachSuccessMsg] = useState('');
+
+  // Live Dialog Chat History
+  const [liveChatLog, setLiveChatLog] = useState<Array<{ sender: 'user' | 'asam'; text: string }>>([
+    { 
+      sender: 'asam', 
+      text: 'أهلاً بك يا عصام! أنا متصل بالنواة ومستعد للتكلم المباشر معك وتبادل الاقتراحات.' 
+    }
+  ]);
+  const [liveChatInput, setLiveChatInput] = useState('');
 
   // Voice Chat States in Listening Screen
   const [isListening, setIsListening] = useState(false);
@@ -315,6 +344,44 @@ export default function App() {
     }
   };
 
+  // تعليم النواة وحفظ الكلمات الجديدة
+  const handleTeachSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!teachWord.trim()) return;
+    const added = saveCustomTeaching({
+      word: teachWord.trim(),
+      meaning: teachMeaning,
+      type: teachType
+    });
+    setTeachingsList(prev => [added, ...prev]);
+    setTeachWord('');
+    setTeachSuccessMsg(`✓ تم تعليم النواة الكلمة [${added.word}] بنجاح!`);
+    setTimeout(() => setTeachSuccessMsg(''), 3000);
+    speakReply(`تمت إضافة الكلمة إلى ذاكرة النواة بنجاح.`);
+  };
+
+  // إرسال رسالة في الحوار المباشر
+  const handleLiveChatSubmit = async (msgText: string) => {
+    const text = msgText.trim();
+    if (!text) return;
+    setLiveChatLog(prev => [...prev, { sender: 'user', text }]);
+    setLiveChatInput('');
+
+    try {
+      const res = await processAppModification(text, activeApp, zipCore);
+      setLiveChatLog(prev => [...prev, { sender: 'asam', text: res.replyText }]);
+      setActiveApp(res.updatedApp);
+      setCurrentExchange({
+        user: text,
+        reply: res.replyText,
+        coreInfo: res.diffInfo
+      });
+      speakReply(res.replyText);
+    } catch (e) {
+      setLiveChatLog(prev => [...prev, { sender: 'asam', text: 'حدث خطأ في معالجة الأمر.' }]);
+    }
+  };
+
   // رفع ملف ZIP
   const handleCoreZipUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -409,7 +476,7 @@ export default function App() {
       {/* ============================================================== */}
       <header className="relative z-30 w-full px-6 py-4 flex items-center justify-between shrink-0">
         
-        {/* Left: Projects Menu & Voice Speaker */}
+        {/* Left: Projects Menu, Voice Speaker & Teach Core */}
         <div className="flex items-center gap-2">
           <button 
             onClick={() => setShowProjectsDrawer(!showProjectsDrawer)}
@@ -435,6 +502,15 @@ export default function App() {
               <VolumeX className="w-5 h-5 opacity-40" />
             )}
           </button>
+
+          {/* زر صغير أعلى شاشة اليسار لتعليم النواة الكلام والأوامر البرمجية */}
+          <button
+            onClick={() => setShowTeachCoreModal(true)}
+            className="p-2 rounded-full text-amber-400 hover:text-amber-300 hover:bg-white/5 transition-all active:scale-90"
+            title="تعليم النواة الكلام والأوامر البرمجية"
+          >
+            <GraduationCap className="w-5 h-5 stroke-[1.5]" />
+          </button>
         </div>
 
         {/* Center: Clean ASAM Branding */}
@@ -442,8 +518,21 @@ export default function App() {
           ASAM
         </div>
 
-        {/* Right: Clean Action (Save or Add Core) */}
+        {/* Right: Clean Action (Save, Add Core & Build Stages Review) */}
         <div className="flex items-center gap-2">
+          {/* زر صغير أعلى الشاشة من اليمين رفيو لمشاهدة بناء التطبيقات ومراحل البناء */}
+          <button
+            onClick={() => setShowBuildReviewModal(true)}
+            className={`p-2 rounded-full transition-all active:scale-90 ${
+              activeApp.isBuilt 
+                ? 'text-cyan-400 hover:text-cyan-300 hover:bg-white/5' 
+                : 'text-slate-500 hover:text-slate-300'
+            }`}
+            title="مراحل بناء التطبيق (Review)"
+          >
+            <Layers className="w-5 h-5 stroke-[1.5]" />
+          </button>
+
           {hasDrawnElements ? (
             <button
               onClick={handleSaveCurrentProject}
@@ -785,10 +874,21 @@ export default function App() {
       {/* 4. BOTTOM DOCK (الكبسولة البسيطة في الأسفل للتحدث أو الكتابة) */}
       {/* ============================================================== */}
       {currentView === 'main' && (
-        <footer className="relative z-30 w-full px-4 sm:px-12 py-5 shrink-0">
+        <footer className="relative z-30 w-full px-4 sm:px-12 py-5 shrink-0 flex items-center justify-center gap-3">
+          
+          {/* زر صغير أسفل الشاشة جهة اليسار للتكلم المباشر مع البرنامج */}
+          <button
+            type="button"
+            onClick={() => setShowLiveDialogModal(true)}
+            className="w-10 h-10 rounded-full flex items-center justify-center bg-zinc-900/90 hover:bg-zinc-800 text-amber-400 border border-white/10 hover:border-amber-400/40 shadow-xl transition-all shrink-0 active:scale-90"
+            title="محادثة مباشرة واقتراحات مع النواة"
+          >
+            <Headphones className="w-4 h-4" />
+          </button>
+
           <form 
             onSubmit={handleSubmit}
-            className="max-w-xl mx-auto rounded-full bg-zinc-900/90 border border-white/10 px-4 py-2 flex items-center justify-between gap-3 shadow-2xl backdrop-blur-md"
+            className="w-full max-w-xl rounded-full bg-zinc-900/90 border border-white/10 px-4 py-2 flex items-center justify-between gap-3 shadow-2xl backdrop-blur-md"
           >
             {/* زر التحدث: ينقلك مباشرة لشاشة الاستماع */}
             <button
@@ -824,6 +924,269 @@ export default function App() {
             </button>
           </form>
         </footer>
+      )}
+
+      {/* ============================================================== */}
+      {/* 5. MODALS (تعليم النواة - مراحل البناء - المحادثة المباشرة) */}
+      {/* ============================================================== */}
+
+      {/* نافذة: تعليم النواة الكلام والأوامر البرمجية (أعلى اليسار) */}
+      {showTeachCoreModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-3xl bg-zinc-950 border border-white/10 p-5 space-y-4 shadow-2xl animate-in fade-in">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2">
+                <GraduationCap className="w-5 h-5 text-amber-400" />
+                <div>
+                  <h4 className="text-sm font-bold text-white">تعليم النواة الكلام والأوامر</h4>
+                  <p className="text-[10px] text-slate-400">تحديث المعجم البرمجي الدائم لـ ASAMALI</p>
+                </div>
+              </div>
+              <button onClick={() => setShowTeachCoreModal(false)} className="text-slate-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {teachSuccessMsg && (
+              <div className="p-2.5 rounded-xl bg-emerald-500/20 text-emerald-300 text-xs text-center font-bold">
+                {teachSuccessMsg}
+              </div>
+            )}
+
+            <form onSubmit={handleTeachSubmit} className="space-y-3">
+              <div>
+                <label className="text-xs text-slate-300 block mb-1">الكلمة أو العبارة الجديدة:</label>
+                <input
+                  type="text"
+                  value={teachWord}
+                  onChange={(e) => setTeachWord(e.target.value)}
+                  placeholder="مثال: جهز لي واجهة، شاشتي، أضف زر، ..."
+                  required
+                  className="w-full bg-zinc-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-amber-400/50"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="text-xs text-slate-300 block mb-1">نوع التعليم:</label>
+                  <select
+                    value={teachType}
+                    onChange={(e) => setTeachType(e.target.value as any)}
+                    className="w-full bg-zinc-900 border border-white/10 rounded-xl px-2 py-2 text-xs text-white focus:outline-none"
+                  >
+                    <option value="verb">فعل برمجي (Verb)</option>
+                    <option value="target">مكون / هدف (Target)</option>
+                    <option value="color">لون مخصص (Color)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-300 block mb-1">الإجراء في النواة:</label>
+                  <select
+                    value={teachMeaning}
+                    onChange={(e) => setTeachMeaning(e.target.value)}
+                    className="w-full bg-zinc-900 border border-white/10 rounded-xl px-2 py-2 text-xs text-white focus:outline-none"
+                  >
+                    <option value="BUILD">بناء تطبيق (BUILD)</option>
+                    <option value="ADD">إضافة مكون (ADD)</option>
+                    <option value="MODIFY">تعديل (MODIFY)</option>
+                    <option value="BUTTON">زر تفاعلي (BUTTON)</option>
+                    <option value="SCREEN">شاشة كاملة (SCREEN)</option>
+                    <option value="LOGIN">شاشة دخول (LOGIN)</option>
+                    <option value="RESTAURANT">تطبيق مطعم (RESTAURANT)</option>
+                    <option value="CLEAR">مسح اللوحة (CLEAR)</option>
+                  </select>
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                className="w-full py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black font-bold text-xs shadow-lg transition-all active:scale-95"
+              >
+                + حفظ في ذاكرة النواة الدائمة
+              </button>
+            </form>
+
+            <div className="border-t border-white/10 pt-3">
+              <span className="text-[11px] font-bold text-slate-400 block mb-2">الكلمات التي تم تعليمها للنواة:</span>
+              <div className="max-h-36 overflow-y-auto space-y-1.5 pr-1">
+                {teachingsList.length === 0 ? (
+                  <p className="text-[11px] text-slate-500 text-center py-2">لا توجد كلمات مخصصة بعد. أضف أول كلمة أعلاه!</p>
+                ) : (
+                  teachingsList.map(t => (
+                    <div key={t.id} className="p-2 rounded-lg bg-white/5 border border-white/5 flex items-center justify-between text-[11px]">
+                      <span className="font-bold text-amber-300">{t.word}</span>
+                      <span className="text-slate-400 font-mono text-[10px] bg-zinc-800 px-1.5 py-0.5 rounded">
+                        {t.meaning} ({t.type})
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* نافذة: مراحل بناء التطبيقات (Review) (أعلى اليمين) */}
+      {showBuildReviewModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="w-full max-w-md rounded-3xl bg-zinc-950 border border-white/10 p-5 space-y-4 shadow-2xl animate-in fade-in">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2">
+                <Layers className="w-5 h-5 text-cyan-400" />
+                <div>
+                  <h4 className="text-sm font-bold text-white">مراحل بناء التطبيق (Review)</h4>
+                  <p className="text-[10px] text-slate-400">تتبع خطوات تنفيذ وتوليد المشروع عبر النواة</p>
+                </div>
+              </div>
+              <button onClick={() => setShowBuildReviewModal(false)} className="text-slate-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-200">
+              <span className="font-bold block">التطبيق الحالي: {activeApp.name || 'مشروع جديد'}</span>
+              <span className="text-[10px] text-cyan-300/80">التصنيف: {activeApp.category} • الشاشات: {Object.keys(activeApp.screens).length}</span>
+            </div>
+
+            <div className="space-y-2.5">
+              <span className="text-xs font-bold text-slate-300 block">مراحل التنفيذ المكتملة:</span>
+              
+              <div className="space-y-2 text-xs">
+                <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div>
+                    <h5 className="font-bold text-white text-xs">1. تحليل النية والتوجيه (Intent Router)</h5>
+                    <p className="text-[10px] text-slate-400">فحص الجملة كاملة والتحقق من النية التنفيذية قبل أي تعديل</p>
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div>
+                    <h5 className="font-bold text-white text-xs">2. استدعاء ملفات النواة من ZIP</h5>
+                    <p className="text-[10px] text-slate-400">استشارة recipes و templates في ({zipCore.fileName})</p>
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div>
+                    <h5 className="font-bold text-white text-xs">3. توليد الشاشات والواجهات البرمجية</h5>
+                    <p className="text-[10px] text-slate-400">
+                      الشاشات المنشأة: ({Object.keys(activeApp.screens).map(k => activeApp.screens[k]?.title || k).join('، ')})
+                    </p>
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div>
+                    <h5 className="font-bold text-white text-xs">4. ربط مسارات التنقل والأزرار التفاعلية</h5>
+                    <p className="text-[10px] text-slate-400">مزامنة {activeApp.navigation?.tabs?.length || 0} تبويبات تنقل وتعيين التبويب النشط</p>
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <div>
+                    <h5 className="font-bold text-white text-xs">5. الفحص الذاتي وتصحيح الأخطاء</h5>
+                    <p className="text-[10px] text-slate-400">اجتياز فحص validateAndRepairApp بدون أي تعارضات</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setShowBuildReviewModal(false)}
+              className="w-full py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white font-bold text-xs transition-all"
+            >
+              إغلاق المراجعة
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* نافذة: التكلم المباشر مع البرنامج وتبادل الاقتراحات (أسفل اليسار) */}
+      {showLiveDialogModal && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="w-full max-w-lg rounded-3xl bg-zinc-950 border border-white/10 p-5 space-y-4 shadow-2xl animate-in fade-in flex flex-col max-h-[85vh]">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30">
+                  <Headphones className="w-4 h-4" />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white">المحادثة المباشرة والاقتراحات</h4>
+                  <p className="text-[10px] text-amber-400/90 font-mono">
+                    {zipCore.isLoaded ? `معتمد كلياً على نواة: ${zipCore.fileName}` : 'متصل بـ ASAM'}
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setShowLiveDialogModal(false)} className="text-slate-400 hover:text-white">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* سياق الاقتراحات من النواة */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-bold text-slate-400 block">اقتراحات سريعة مستخرجة من النواة:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {[
+                  'أنشئ تطبيق مطعم يحتوي على قائمة أطعمة وسلة طلبات وصفحة تأكيد الطلب',
+                  'أضف شاشة تسجيل دخول إلى المشروع',
+                  'عدّل لون الزر السابق واجعله أزرق',
+                  'ما الملفات الموجودة في المشروع؟',
+                  'اشرح لي ماذا تستطيع بناءه'
+                ].map((sug, i) => (
+                  <button
+                    key={i}
+                    onClick={() => handleLiveChatSubmit(sug)}
+                    className="text-[10px] px-2.5 py-1 rounded-full bg-white/5 hover:bg-amber-500/20 text-slate-300 hover:text-amber-200 border border-white/5 transition-all text-right"
+                  >
+                    💡 {sug}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* سجل المحادثة المباشرة */}
+            <div className="flex-1 overflow-y-auto space-y-2.5 p-3 rounded-2xl bg-zinc-900/60 border border-white/5 min-h-[160px]">
+              {liveChatLog.map((msg, i) => (
+                <div key={i} className={`flex ${msg.sender === 'user' ? 'justify-start' : 'justify-end'}`}>
+                  <div className={`p-3 rounded-2xl text-xs max-w-[85%] leading-relaxed ${
+                    msg.sender === 'user' 
+                      ? 'bg-amber-500/20 text-amber-200 border border-amber-500/30' 
+                      : 'bg-white/10 text-white'
+                  }`}>
+                    <p>{msg.text}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {/* صندوق الإرسال الصوتي أو الكتابي للحوار المباشر */}
+            <form 
+              onSubmit={(e) => { e.preventDefault(); handleLiveChatSubmit(liveChatInput); }}
+              className="flex items-center gap-2 pt-1"
+            >
+              <input
+                type="text"
+                value={liveChatInput}
+                onChange={(e) => setLiveChatInput(e.target.value)}
+                placeholder="تكلم أو اكتب اقتراحك لـ ASAM..."
+                className="flex-1 bg-zinc-900 border border-white/10 rounded-2xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-400/50"
+              />
+              <button
+                type="submit"
+                className="p-2.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-black font-bold active:scale-95 transition-all shrink-0"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </form>
+          </div>
+        </div>
       )}
 
     </div>

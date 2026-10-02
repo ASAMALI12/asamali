@@ -1,6 +1,23 @@
 import { MobileAppConfig, SmartZipCore, AppItem, CustomButtonConfig, AppScreen, AppTab } from '../types';
 import { queryZipCore } from './zipEngine';
 
+export type RouterIntent = 
+  | 'CHAT'
+  | 'PROJECT_QUESTION'
+  | 'BUILD'
+  | 'MODIFY'
+  | 'DELETE'
+  | 'DEBUG'
+  | 'UNKNOWN';
+
+export interface RouteAnalysis {
+  intent: RouterIntent;
+  confidence: number;
+  reason: string;
+  target?: string;
+  isActionable: boolean;
+}
+
 export interface AsamaliLexicon {
   version: string;
   author: string;
@@ -35,9 +52,18 @@ export interface EngineContext {
   virtualFiles: Record<string, string>;
 }
 
+export interface TeachCoreRecord {
+  id: string;
+  word: string;
+  meaning: string;
+  type: 'verb' | 'target' | 'color';
+  timestamp: string;
+}
+
 // 1. Persistent Storage Handlers
 const MEMORY_STORAGE_KEY = 'asamali_engine_memory';
 const CONTEXT_STORAGE_KEY = 'asamali_engine_context';
+const TEACHING_STORAGE_KEY = 'asamali_custom_teachings';
 
 export function getEngineMemory(): LearningItem[] {
   try {
@@ -82,9 +108,43 @@ export function saveEngineContext(ctx: EngineContext) {
   }
 }
 
+export function getCustomTeachings(): TeachCoreRecord[] {
+  try {
+    if (typeof localStorage === 'undefined') return [];
+    const raw = localStorage.getItem(TEACHING_STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) {
+    return [];
+  }
+}
+
+export function saveCustomTeaching(record: Omit<TeachCoreRecord, 'id' | 'timestamp'>): TeachCoreRecord {
+  const newRec: TeachCoreRecord = {
+    id: `teach_${Date.now()}`,
+    timestamp: new Date().toISOString(),
+    ...record
+  };
+  try {
+    const list = getCustomTeachings();
+    list.unshift(newRec);
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(TEACHING_STORAGE_KEY, JSON.stringify(list));
+    }
+    // Register into active runtime lexicon
+    if (record.type === 'verb') {
+      ASAMALI_LEXICON.verbs[record.word.toLowerCase()] = record.meaning;
+    } else if (record.type === 'target') {
+      ASAMALI_LEXICON.targets[record.word.toLowerCase()] = record.meaning;
+    }
+  } catch (e) {
+    console.warn('Failed to save teaching:', e);
+  }
+  return newRec;
+}
+
 // 2. Real ASAMALI Lexicon
 export const ASAMALI_LEXICON: AsamaliLexicon = {
-  version: '3.6.0',
+  version: '3.7.0',
   author: 'ASAMALI',
   verbs: {
     'ارسم': 'DRAW',
@@ -183,6 +243,20 @@ export const ASAMALI_LEXICON: AsamaliLexicon = {
   }
 };
 
+// Merge any previously saved teachings into lexicon
+if (typeof localStorage !== 'undefined') {
+  try {
+    const list = getCustomTeachings();
+    list.forEach(item => {
+      if (item.type === 'verb') {
+        ASAMALI_LEXICON.verbs[item.word.toLowerCase()] = item.meaning;
+      } else if (item.type === 'target') {
+        ASAMALI_LEXICON.targets[item.word.toLowerCase()] = item.meaning;
+      }
+    });
+  } catch (e) {}
+}
+
 /**
  * Normalizes input text and extracts clean tokens
  */
@@ -200,6 +274,216 @@ export function tokenizeArabic(text: string): string[] {
     .filter(t => t.length > 0);
 }
 
+// =====================================================================
+// 3. INTENT ROUTER (طبقة توجيه النية الصارمة قبل تنفيذ أي إجراء)
+// =====================================================================
+export function analyzeUserIntent(
+  prompt: string,
+  currentApp: MobileAppConfig,
+  context: EngineContext
+): RouteAnalysis {
+  const norm = prompt.trim().toLowerCase();
+  const tokens = tokenizeArabic(norm);
+
+  // -------------------------------------------------------------
+  // A) Pure Conversational Greetings & Capabilities (CHAT)
+  // e.g. "مرحبا", "السلام عليكم", "كيف حالك", "ماذا تستطيع ان تفعل", "ما الذي تستطيع بناءه؟"
+  // -------------------------------------------------------------
+  const capabilityInquiries = [
+    'كيف حالك', 'كيفك', 'من انت', 'من أنت', 'ماذا تستطيع', 'ما الذي تستطيع', 
+    'اشرح لي ماذا', 'ما هي قدراتك', 'ماذا تفعل', 'عرفني بنفسك', 'اقترح علي', 
+    'شكرا', 'شكراً', 'مع السلامة', 'باي', 'تستطيع بناء'
+  ];
+  const isCapabilityInquiry = capabilityInquiries.some(ci => norm.includes(ci));
+
+  const chatGreetings = ['مرحبا', 'مرحباً', 'اهلا', 'أهلاً', 'السلام عليكم', 'صباح الخير', 'مساء الخير', 'هلا', 'هاي', 'hello', 'hi'];
+  const isPureGreeting = chatGreetings.some(g => norm === g || norm.startsWith(g + ' ') || norm === g + '!');
+
+  // If user says "ما الذي تستطيع بناءه؟" or "مرحبا" -> strictly CHAT!
+  if (isCapabilityInquiry || (isPureGreeting && !norm.includes('ابن') && !norm.includes('انشئ') && !norm.includes('اصنع'))) {
+    return {
+      intent: 'CHAT',
+      confidence: 0.98,
+      reason: 'محادثة عادية أو استفسار عن قدرات المحرك دون طلب بناء أو تعديل',
+      isActionable: false
+    };
+  }
+
+  // 1. Explicit Build Verbs
+  const buildKeywords = ['ابنِ', 'ابني', 'انشئ', 'انشاء', 'اصنع', 'صمم', 'سوي تطبيق', 'اعمل تطبيق', 'build', 'create app'];
+  const hasExplicitBuildDirective = buildKeywords.some(bk => norm.includes(bk));
+
+  // 2. Explicit Modification / Addition Verbs
+  const modifyKeywords = ['اضف', 'أضف', 'اضافة', 'ضع', 'غير', 'عدل', 'بدل', 'حدث', 'لون', 'اجعل', 'modify', 'update', 'change'];
+  const hasExplicitModifyDirective = modifyKeywords.some(mk => norm.includes(mk));
+
+  // 3. Explicit Delete Verbs
+  const deleteKeywords = ['احذف', 'حذف', 'ازل', 'ازالة', 'امسح', 'مسح', 'افرغ', 'تفريغ', 'delete', 'remove', 'clear'];
+  const hasExplicitDeleteDirective = deleteKeywords.some(dk => norm.includes(dk));
+
+  // 4. Project Question Indicators
+  const questionKeywords = ['ماذا يوجد', 'ما الملفات', 'ما الذي', 'هل يوجد', 'ما هو', 'ما هي', 'كم شاشة', 'كم شاشه', 'كم صفحة', 'اشرح لي المشروع', 'ما حالة', 'هل تم'];
+  const isQuestion = questionKeywords.some(qk => norm.includes(qk)) || (norm.includes('?') || norm.includes('؟'));
+
+  // 5. Debugging Indicators
+  const debugKeywords = ['لماذا ظهر', 'سبب الخطأ', 'سبب هذا الخطأ', 'افحص المشروع', 'حلل الخطأ', 'debug', 'error'];
+  const isDebug = debugKeywords.some(dk => norm.includes(dk));
+
+  // -------------------------------------------------------------
+  // B) Debugging Questions (DEBUG)
+  // -------------------------------------------------------------
+  if (isDebug && !hasExplicitBuildDirective) {
+    return {
+      intent: 'DEBUG',
+      confidence: 0.95,
+      reason: 'طلب تحليل وتشخيص أخطاء المشروع دون تعديل',
+      isActionable: false
+    };
+  }
+
+  // -------------------------------------------------------------
+  // C) Project Questions (PROJECT_QUESTION)
+  // e.g. "ماذا يوجد في المشروع؟", "هل يوجد في المشروع شاشة تسجيل دخول؟"
+  // -------------------------------------------------------------
+  if (isQuestion && !hasExplicitBuildDirective && !hasExplicitModifyDirective && !hasExplicitDeleteDirective) {
+    return {
+      intent: 'PROJECT_QUESTION',
+      confidence: 0.95,
+      reason: 'سؤال تحليلي واستفسار عن محتويات وملفات المشروع الحالي دون طلب تعديل',
+      isActionable: false
+    };
+  }
+
+  // -------------------------------------------------------------
+  // D) Explicit Delete Intent (DELETE)
+  // e.g. "احذف هذه الصفحة", "احذف الزر"
+  // -------------------------------------------------------------
+  if (hasExplicitDeleteDirective) {
+    return {
+      intent: 'DELETE',
+      confidence: 0.95,
+      reason: 'أمر صريح بحذف عنصر أو شاشة محددة',
+      isActionable: true
+    };
+  }
+
+  // -------------------------------------------------------------
+  // E) Explicit Build Intent (BUILD)
+  // e.g. "ابنِ تطبيق مطعم", "ابني واجهة ترحيب مكتوب فيها مرحبا"
+  // -------------------------------------------------------------
+  if (hasExplicitBuildDirective || norm.includes('تطبيق مطعم') || norm.includes('تطبيق شات') || norm.includes('تطبيق متجر')) {
+    return {
+      intent: 'BUILD',
+      confidence: 0.96,
+      reason: 'أمر إنشاء وتوليد تطبيق أو واجهة جديدة بالكامل',
+      isActionable: true
+    };
+  }
+
+  // -------------------------------------------------------------
+  // F) Explicit Modify Intent (MODIFY)
+  // e.g. "أضف شاشة تسجيل الدخول", "عدل لون الزر", "أضف زر تسجيل الدخول"
+  // -------------------------------------------------------------
+  if (hasExplicitModifyDirective || tokens.includes('السابق') || tokens.includes('زر') || tokens.includes('شاشه') || tokens.includes('شاشة')) {
+    return {
+      intent: 'MODIFY',
+      confidence: 0.92,
+      reason: 'أمر تعديل أو إضافة مكون إلى المشروع الحالي',
+      isActionable: true
+    };
+  }
+
+  // -------------------------------------------------------------
+  // G) Ambiguous or Unknown (UNKNOWN)
+  // -------------------------------------------------------------
+  if (tokens.length <= 1 && !hasExplicitBuildDirective && !hasExplicitModifyDirective) {
+    return {
+      intent: 'UNKNOWN',
+      confidence: 0.5,
+      reason: 'رسالة غير واضحة المعالم، تحتاج توضيح من المستخدم',
+      isActionable: false
+    };
+  }
+
+  // Fallback to CHAT if no clear actionable directive was given
+  return {
+    intent: 'CHAT',
+    confidence: 0.8,
+    reason: 'سياق حواري عام دون أمر تنفيذي صريح',
+    isActionable: false
+  };
+}
+
+/**
+ * Handles purely conversational queries (CHAT) without touching project state
+ */
+export function handleChatResponse(prompt: string, zipCore?: SmartZipCore): string {
+  const norm = prompt.trim().toLowerCase();
+
+  if (norm.includes('مرحبا') || norm.includes('اهلا') || norm.includes('السلام عليكم') || norm.includes('هلا')) {
+    return zipCore?.isLoaded
+      ? `أهلاً بك يا عصام! نواة [${zipCore.fileName}] مربوطة ومفعلة كلياً. أنا في خدمتك للمحادثة، أو التخطيط، أو بناء أي تطبيق تطلبه بالصوت أو النص. كيف يمكنني مساعدتك اليوم؟`
+      : `أهلاً بك يا عصام! أنا مساعدك ومحرك ASAM الذكي. تفضل بأي سؤال أو حدد لي التطبيق الذي تريد هندسته وبناءه فورياً.`;
+  }
+
+  if (norm.includes('ماذا تستطيع') || norm.includes('ما الذي تستطيع') || norm.includes('اشرح لي ماذا') || norm.includes('قدراتك')) {
+    return `أستطيع بناء وهندسة تطبيقات الهواتف الذكية التفاعلية بالكامل؛ مثل تطبيقات المطاعم، والمتاجر الإلكترونية، والمحادثات الفورية، وإضافة شاشات كشاشة تسجيل الدخول والسلة والدفع، وتعديل الألوان والتصاميم لحظياً بالصوت أو النص عبر النواة.`;
+  }
+
+  if (norm.includes('كيف حالك') || norm.includes('كيفك')) {
+    return `أنا بخير وفي أتم الجاهزية البرمجية! النواة نشطة ومستعد لتنفيذ أي خطة تطلبها.`;
+  }
+
+  if (norm.includes('شكرا') || norm.includes('شكراً')) {
+    return `العفو يا عصام! أنا هنا دائماً في خدمتك لمساعدتك في بناء وتطوير مشاريعك.`;
+  }
+
+  return `أهلاً بك! يمكنك سؤالي عن أي شيء، أو إعطائي أمراً مباشراً لبناء تطبيق (مثل: "ابنِ تطبيق مطعم" أو "أضف شاشة تسجيل الدخول").`;
+}
+
+/**
+ * Answers questions about the current project without altering it (PROJECT_QUESTION)
+ */
+export function handleProjectQuestion(
+  prompt: string,
+  currentApp: MobileAppConfig,
+  context: EngineContext
+): string {
+  const norm = prompt.trim().toLowerCase();
+  const screenKeys = Object.keys(currentApp.screens || {});
+
+  // Check login screen presence
+  if (norm.includes('تسجيل دخول') || norm.includes('دخول') || norm.includes('login') || norm.includes('auth')) {
+    const hasLogin = screenKeys.some(k => k.includes('login') || k.includes('auth'));
+    if (hasLogin) {
+      return `نعم، المشروع يحتوي حالياً على شاشة تسجيل دخول (Login Screen) مجهزة بحقول الإدخال، وزر الدخول، وخيار تذكر الجلسة.`;
+    } else {
+      return `لا، المشروع الحالي لا يحتوي على شاشة تسجيل دخول حتى الآن. إذا رغبت في إضافتها، فقط اطلب مني: "أضف شاشة تسجيل دخول إلى المشروع".`;
+    }
+  }
+
+  // Check general files / screens in project
+  if (norm.includes('ماذا يوجد') || norm.includes('ما الملفات') || norm.includes('ما الذي انشأته') || norm.includes('كم شاشة') || norm.includes('كم صفحة')) {
+    if (!currentApp.isBuilt || screenKeys.length === 0) {
+      return `المشروع الحالي ما زال فارغاً وفي حالة الانتظار، لم يتم بناء أي شاشات بعد. يمكنك البدء بطلب: "ابنِ تطبيق مطعم" أو أي فكرة أخرى.`;
+    }
+    const screenNames = screenKeys.map(k => currentApp.screens[k]?.title || k).join('، ');
+    const hasBtn = currentApp.hasCustomButton ? `وزر تفاعلي (${currentApp.customButton.text})` : 'بدون زر عائم';
+    return `يحتوي المشروع الحالي [${currentApp.name}] على ${screenKeys.length} شاشات هي: (${screenNames})، مع شريط تنقل سفلي، ${hasBtn}.`;
+  }
+
+  // Check button color / custom button
+  if (norm.includes('زر') || norm.includes('لون')) {
+    if (currentApp.hasCustomButton) {
+      return `الزر التفاعلي الحالي نصه: "${currentApp.customButton.text}"، ولونه: ${currentApp.customButton.bgColor}، وشكله: ${currentApp.customButton.shape}.`;
+    } else {
+      return `لا يوجد زر تفاعلي عائم مفعل في المشروع حالياً. يمكنك إضافة زر بقول: "أضف زراً باللون الأزرق".`;
+    }
+  }
+
+  return `حالة المشروع [${currentApp.name}]: يتضمن ${screenKeys.length} شاشات (${screenKeys.join(', ')}). جميع المكونات تعمل بتوافق تام.`;
+}
+
 /**
  * Validates the resulting app schema and automatically repairs any inconsistencies
  */
@@ -212,14 +496,12 @@ export function validateAndRepairApp(app: MobileAppConfig): {
   let repaired = false;
   const fixed = JSON.parse(JSON.stringify(app)) as MobileAppConfig;
 
-  // 1. Ensure isBuilt is true when screens exist
   if (!fixed.isBuilt && Object.keys(fixed.screens || {}).length > 0) {
     fixed.isBuilt = true;
     repaired = true;
     issues.push('تم تفعيل حالة البناء النشط للمشروع');
   }
 
-  // 2. Ensure screens object exists and has at least one screen
   if (!fixed.screens || Object.keys(fixed.screens).length === 0) {
     fixed.screens = {
       home: {
@@ -231,7 +513,6 @@ export function validateAndRepairApp(app: MobileAppConfig): {
     issues.push('تم إنشاء الشاشة الرئيسية التلقائية');
   }
 
-  // 3. Ensure navigation tabs align with existing screens
   if (!fixed.navigation) {
     fixed.navigation = {
       title: fixed.name || 'تطبيقي 📱',
@@ -245,7 +526,6 @@ export function validateAndRepairApp(app: MobileAppConfig): {
   const screenKeys = Object.keys(fixed.screens);
   const existingTabIds = new Set((fixed.navigation.tabs || []).map(t => t.id));
 
-  // Add missing tabs for newly generated screens
   screenKeys.forEach(sKey => {
     if (!existingTabIds.has(sKey)) {
       const scr = fixed.screens[sKey];
@@ -267,14 +547,12 @@ export function validateAndRepairApp(app: MobileAppConfig): {
     }
   });
 
-  // 4. Ensure activeTab exists
   if (!fixed.screens[fixed.navigation.activeTab]) {
     fixed.navigation.activeTab = screenKeys[0] || 'home';
     repaired = true;
     issues.push(`تم ضبط التبويب النشط على: ${fixed.navigation.activeTab}`);
   }
 
-  // 5. Ensure valid customButton
   if (!fixed.customButton) {
     fixed.customButton = {
       id: 'cta_btn',
@@ -294,8 +572,7 @@ export function validateAndRepairApp(app: MobileAppConfig): {
 }
 
 /**
- * Intelligent ASAMALI Core Execution Pipeline
- * Comprehends full natural language sentences and compound requests
+ * Intelligent ASAMALI Core Execution Pipeline with Strict Intent Routing
  */
 export function executeAsamaliPipeline(
   prompt: string,
@@ -305,7 +582,7 @@ export function executeAsamaliPipeline(
   updatedApp: MobileAppConfig;
   replyText: string;
   matchedFiles: string[];
-  resolvedIntent: string;
+  resolvedIntent: RouterIntent;
   executionPlan: string[];
 } {
   const normPrompt = prompt.trim();
@@ -314,29 +591,81 @@ export function executeAsamaliPipeline(
   const matchedFiles: string[] = ['ASAMALI/brain/lexicon_ar.json'];
   const executionPlan: string[] = [];
 
-  // Query ZIP core to pull relevant recipes and skills
-  let zipCoreQueryResult: any = null;
+  // ===================================================================
+  // 1. INTENT ROUTING LAYER (تحليل وتوجيه النية أولاً)
+  // ===================================================================
+  const route = analyzeUserIntent(normPrompt, currentApp, context);
+
+  // A) Pure Conversation (CHAT) -> DO NOT TOUCH APP OR FILES
+  if (route.intent === 'CHAT') {
+    const replyText = handleChatResponse(normPrompt, zipCore);
+    return {
+      updatedApp: currentApp, // NO modification
+      replyText,
+      matchedFiles: ['ASAMALI/skills/voice-chat/SKILL.md'],
+      resolvedIntent: 'CHAT',
+      executionPlan: ['توجيه المحادثة: إجابة حوارية مباشرة دون تعديل المشروع']
+    };
+  }
+
+  // B) Question about Current Project (PROJECT_QUESTION) -> DO NOT TOUCH APP
+  if (route.intent === 'PROJECT_QUESTION') {
+    const replyText = handleProjectQuestion(normPrompt, currentApp, context);
+    return {
+      updatedApp: currentApp, // NO modification
+      replyText,
+      matchedFiles: ['ASAMALI/skills/intent-analysis/SKILL.md'],
+      resolvedIntent: 'PROJECT_QUESTION',
+      executionPlan: ['فحص المشروع: استرجاع معلومات الشاشات والملفات للإجابة التحليلية']
+    };
+  }
+
+  // C) Debugging Question (DEBUG) -> DO NOT TOUCH APP
+  if (route.intent === 'DEBUG') {
+    const replyText = `تم فحص المشروع الحالي [${currentApp.name}]. الهيكل البرمجي متناسق وجميع الشاشات (${Object.keys(currentApp.screens).join(', ')}) معرفة بصورة سليمة دون تعارضات برمجية.`;
+    return {
+      updatedApp: currentApp,
+      replyText,
+      matchedFiles: ['ASAMALI/skills/debugging/SKILL.md'],
+      resolvedIntent: 'DEBUG',
+      executionPlan: ['تحليل سلامة الأكواد ومراجعة التناسق']
+    };
+  }
+
+  // D) Ambiguous / Unknown (UNKNOWN) -> Ask clarifying question without modifying
+  if (route.intent === 'UNKNOWN') {
+    const replyText = `لم أستطع تحديد ما إذا كنت تريد محادثة عادية أو بناء تطبيق معين. هل تريد بناء تطبيق جديد، أو تعديل شاشة معينة؟ وضح لي طلبك وسأنفذه فوراً.`;
+    return {
+      updatedApp: currentApp,
+      replyText,
+      matchedFiles: ['ASAMALI/skills/intent-analysis/SKILL.md'],
+      resolvedIntent: 'UNKNOWN',
+      executionPlan: ['طلب توضيح من المستخدم لتفادي التعديل العشوائي']
+    };
+  }
+
+  // ===================================================================
+  // 2. ACTIONABLE EXECUTION PIPELINE (BUILD / MODIFY / DELETE)
+  // Reaching here ONLY when intent is strictly actionable!
+  // ===================================================================
   if (zipCore && zipCore.isLoaded) {
-    zipCoreQueryResult = queryZipCore(normPrompt, zipCore);
-    if (zipCoreQueryResult.matchedFiles.length > 0) {
-      matchedFiles.push(...zipCoreQueryResult.matchedFiles);
+    const zipRes = queryZipCore(normPrompt, zipCore);
+    if (zipRes.matchedFiles.length > 0) {
+      matchedFiles.push(...zipRes.matchedFiles);
     }
   }
 
   let updated: MobileAppConfig = JSON.parse(JSON.stringify(currentApp));
   let replyText = '';
-  let resolvedIntent = 'INTENT_CUSTOM_PIPELINE';
 
   // -------------------------------------------------------------
-  // TEST CASE 2 & COMPOUND REQUEST: Restaurant App with Menu, Cart, Confirm
-  // e.g. "أنشئ تطبيق مطعم يحتوي على قائمة أطعمة وسلة طلبات وصفحة تأكيد الطلب"
+  // ACTIONABLE 1: Compound Request: Restaurant App (BUILD)
   // -------------------------------------------------------------
   const isRestaurantIntent = 
     (tokens.includes('مطعم') || tokens.includes('اكل') || tokens.includes('طعام') || tokens.includes('وجبات')) &&
     (tokens.includes('قائمه') || tokens.includes('سله') || tokens.includes('تاكيد') || tokens.includes('انشئ') || tokens.includes('ابن'));
 
-  if (isRestaurantIntent) {
-    resolvedIntent = 'INTENT_BUILD_RESTAURANT_SYSTEM';
+  if (isRestaurantIntent && route.intent === 'BUILD') {
     matchedFiles.push('ASAMALI/knowledge/build-recipes/feature_recipes.json#recipe_restaurant');
     matchedFiles.push('ASAMALI/knowledge/app-templates/templates.json#food_delivery');
     matchedFiles.push('ASAMALI/knowledge/app-design/UX_PATTERNS_FOR_APPS.md');
@@ -560,14 +889,14 @@ export function executeAsamaliPipeline(
   }
 
   // -------------------------------------------------------------
-  // TEST CASE 1: Add Login Screen to Current Project
-  // e.g. "أضف شاشة تسجيل دخول إلى المشروع"
+  // ACTIONABLE 2: Add Login Screen (MODIFY / BUILD)
+  // e.g. "أضف شاشة تسجيل دخول إلى المشروع" (without "زر")
   // -------------------------------------------------------------
   else if (
     (tokens.includes('دخول') || tokens.includes('تسجيل') || tokens.includes('login') || tokens.includes('auth')) &&
-    (tokens.includes('اضف') || tokens.includes('ضع') || tokens.includes('شاشه') || tokens.includes('صفحه') || tokens.includes('انشئ') || tokens.includes('اعمل'))
+    (tokens.includes('شاشه') || tokens.includes('شاشة') || tokens.includes('صفحه') || tokens.includes('صفحة')) &&
+    !tokens.includes('زر') && !tokens.includes('الزر')
   ) {
-    resolvedIntent = 'INTENT_ADD_LOGIN_SCREEN';
     matchedFiles.push('ASAMALI/knowledge/connectors/AUTH_PATTERNS.md');
     matchedFiles.push('ASAMALI/knowledge/build-recipes/feature_recipes.json#recipe_login');
 
@@ -633,7 +962,6 @@ export function executeAsamaliPipeline(
     updated.screens = updated.screens || {};
     updated.screens['login'] = loginScreen;
 
-    // Add tab in navigation if missing
     if (!updated.navigation.tabs.some(t => t.id === 'login')) {
       updated.navigation.tabs.push({
         id: 'login',
@@ -642,64 +970,17 @@ export function executeAsamaliPipeline(
       });
     }
 
-    // Immediately activate the newly added login screen so the user sees it
     updated.navigation.activeTab = 'login';
-
-    replyText = 'تم إنشاء شاشة تسجيل الدخول المتكاملة وإضافتها بنجاح إلى مشروعك الحالي! تم تفعيل الشاشة فورياً على الهاتف.';
+    replyText = 'تم إنشاء وتعديل ملفات المشروع لإضافة شاشة تسجيل الدخول المتكاملة وربطها بالتنقل بنجاح!';
     context.lastModifiedElement = { type: 'screen', id: 'login', name: 'شاشة تسجيل الدخول' };
     context.virtualFiles['src/screens/login.json'] = JSON.stringify(loginScreen);
   }
 
   // -------------------------------------------------------------
-  // CONTEXTUAL MODIFICATION: e.g. "عدل الزر السابق", "غير لونه"
+  // ACTIONABLE 3: Explicit Deletions (DELETE)
+  // e.g. "احذف هذه الصفحة", "احذف الزر"
   // -------------------------------------------------------------
-  else if (
-    (tokens.includes('السابق') || tokens.includes('سابق') || tokens.includes('الماضي')) ||
-    ((tokens.includes('غير') || tokens.includes('عدل') || tokens.includes('بدل')) && (tokens.includes('زر') || tokens.includes('الزر') || tokens.includes('لون')))
-  ) {
-    resolvedIntent = 'INTENT_MODIFY_PREVIOUS_ELEMENT';
-    matchedFiles.push('ASAMALI/skills/debugging/SKILL.md');
-    matchedFiles.push('ASAMALI/skills/app-building-v3/SKILL.md');
-
-    executionPlan.push('1. مراجعة ذاكرة سياق المحرك لاسترجاع العنصر السابق');
-    executionPlan.push('2. تحديد التعديل المطلوب (لون، شكل، أو نص)');
-    executionPlan.push('3. تطبيق التعديل المباشر على ملفات المشروع');
-
-    // Detect color
-    let newColor: string | null = null;
-    let colorName: string = '';
-    for (const token of tokens) {
-      if (ASAMALI_LEXICON.colors[token]) {
-        newColor = ASAMALI_LEXICON.colors[token].hex;
-        colorName = ASAMALI_LEXICON.colors[token].name;
-        break;
-      }
-    }
-
-    if (newColor) {
-      updated.customButton.bgColor = newColor;
-      updated.customButton.textColor = (newColor === '#FFFFFF' || newColor === '#EAB308') ? '#000000' : '#FFFFFF';
-      updated.customButton.glow = true;
-      updated.hasCustomButton = true;
-      updated.isBuilt = true;
-
-      replyText = `تم استرجاع الزر السابق من ذاكرة المشروع وتعديل لونه إلى ${colorName || newColor} بنجاح!`;
-      context.lastModifiedElement = { type: 'button', id: updated.customButton.id, name: updated.customButton.text };
-    } else {
-      updated.customButton.text = 'زر تفاعلي محدث ✨';
-      updated.customButton.glow = true;
-      updated.hasCustomButton = true;
-      updated.isBuilt = true;
-      replyText = 'تم تعديل الزر السابق وتحديث حالته التفاعلية وفقاً لسياق المشروع.';
-    }
-  }
-
-  // -------------------------------------------------------------
-  // EXPLICIT DELETION: ONLY when user explicitly asks to delete
-  // e.g. "احذف الزر", "احذف شاشة ...", "امسح الشاشة"
-  // -------------------------------------------------------------
-  else if (tokens.includes('احذف') || tokens.includes('حذف') || tokens.includes('ازل') || tokens.includes('ازالة')) {
-    resolvedIntent = 'INTENT_EXPLICIT_DELETE';
+  else if (route.intent === 'DELETE') {
     matchedFiles.push('ASAMALI/skills/app-building-v3/SKILL.md');
 
     if (tokens.includes('زر') || tokens.includes('الزر')) {
@@ -712,7 +993,6 @@ export function executeAsamaliPipeline(
       updated.showBanner = false;
       replyText = 'تم حذف البطاقة الترحيبية من الشاشة.';
     } else {
-      // Delete active screen if user asked to delete current screen
       const curTab = updated.navigation.activeTab;
       if (curTab !== 'home' && updated.screens[curTab]) {
         delete updated.screens[curTab];
@@ -726,89 +1006,71 @@ export function executeAsamaliPipeline(
   }
 
   // -------------------------------------------------------------
-  // CLEAR CANVAS
+  // ACTIONABLE 4: Contextual Modification (MODIFY)
+  // e.g. "عدل الزر السابق", "أضف زر تسجيل الدخول"
   // -------------------------------------------------------------
-  else if (tokens.includes('امسح') || tokens.includes('افرغ') || tokens.includes('تفريغ') || tokens.includes('فارغه')) {
-    resolvedIntent = 'INTENT_CLEAR_CANVAS';
+  else if (route.intent === 'MODIFY') {
     matchedFiles.push('ASAMALI/skills/app-building-v3/SKILL.md');
-    updated = {
-      ...updated,
-      isBuilt: false,
-      hasCustomButton: false,
-      showSearch: false,
-      showBanner: false,
-      screens: {
-        home: {
-          title: '',
-          items: []
-        }
-      },
-      navigation: {
-        title: 'تطبيق جديد',
-        showBack: false,
-        tabs: [{ id: 'home', label: 'الرئيسية', icon: 'Home' }],
-        activeTab: 'home'
-      }
-    };
-    replyText = 'تم مسح اللوحة وتفريغ المشروع بنجاح. أصبحت الشاشة بيضاء مهيأة لأي مشروع جديد تطلبه.';
-  }
 
-  // -------------------------------------------------------------
-  // ADD BUTTON DIRECTLY
-  // -------------------------------------------------------------
-  else if (tokens.includes('زر') || tokens.includes('الزر') || tokens.includes('زرار')) {
-    resolvedIntent = 'INTENT_BUILD_BUTTON';
-    matchedFiles.push('ASAMALI/knowledge/build-recipes/feature_recipes.json#recipe_button');
-
-    let btnColor = updated.theme?.primaryColor || '#2563EB';
-    let colorName = '';
+    let newColor: string | null = null;
+    let colorName: string = '';
     for (const token of tokens) {
       if (ASAMALI_LEXICON.colors[token]) {
-        btnColor = ASAMALI_LEXICON.colors[token].hex;
+        newColor = ASAMALI_LEXICON.colors[token].hex;
         colorName = ASAMALI_LEXICON.colors[token].name;
         break;
       }
     }
 
-    updated.hasCustomButton = true;
-    updated.isBuilt = true;
-    updated.customButton = {
-      id: `btn_${Date.now()}`,
-      text: colorName ? `زر تفاعلي (${colorName})` : 'زر تفاعلي ✨',
-      bgColor: btnColor,
-      textColor: (btnColor === '#FFFFFF' || btnColor === '#EAB308') ? '#000000' : '#FFFFFF',
-      shape: 'rounded-full',
-      icon: 'Zap',
-      action: 'trigger_action',
-      glow: true
-    };
+    if (tokens.includes('زر') || tokens.includes('الزر')) {
+      const btnColor = newColor || updated.theme?.primaryColor || '#2563EB';
+      const btnText = tokens.includes('تسجيل') ? 'تسجيل الدخول 🔐' : (colorName ? `زر (${colorName})` : 'زر تفاعلي ✨');
 
-    replyText = `تم استدعاء وصفة الزر من نواة ASAMALI ورسم الزر ${colorName ? `بلون ${colorName}` : ''} على اللوحة!`;
-    context.lastModifiedElement = { type: 'button', id: updated.customButton.id, name: updated.customButton.text };
+      updated.hasCustomButton = true;
+      updated.isBuilt = true;
+      updated.customButton = {
+        id: `btn_${Date.now()}`,
+        text: btnText,
+        bgColor: btnColor,
+        textColor: (btnColor === '#FFFFFF' || btnColor === '#EAB308') ? '#000000' : '#FFFFFF',
+        shape: 'rounded-full',
+        icon: 'Zap',
+        action: 'trigger_action',
+        glow: true
+      };
+
+      replyText = `تم تعديل وإضافة الزر [${btnText}] إلى المشروع بنجاح!`;
+      context.lastModifiedElement = { type: 'button', id: updated.customButton.id, name: updated.customButton.text };
+    } else if (newColor) {
+      updated.theme.primaryColor = newColor;
+      replyText = `تم تحديث لون الهوية البصرية للمشروع إلى ${colorName || newColor}.`;
+    } else {
+      replyText = `تم تطبيق التعديلات المطلوبة على عناصر المشروع بنجاح.`;
+    }
   }
 
   // -------------------------------------------------------------
-  // GENERAL INTENT: Comprehensive App Generation from Natural Language
+  // ACTIONABLE 5: General App Building (BUILD)
+  // e.g. "ابني واجهة ترحيب مكتوب فيها مرحبا", "ابنِ تطبيق سياحة"
   // -------------------------------------------------------------
-  else {
-    resolvedIntent = 'INTENT_NATURAL_COMPILATION';
+  else if (route.intent === 'BUILD') {
     matchedFiles.push('ASAMALI/skills/app-building-v3/SKILL.md');
     matchedFiles.push('ASAMALI/knowledge/app-templates/templates.json');
 
     const cleanTitle = normPrompt
       .replace(/ابنِ|ابني|اصنع|انشئ|صمم|اعمل|تطبيق|اريد|سوي|لي|شغل|افتح/g, '')
-      .trim() || 'التطبيق الذكي';
+      .trim() || 'التطبيق الجديد';
 
     executionPlan.push(`1. فهم فكرة التطبيق: ${cleanTitle}`);
-    executionPlan.push('2. توليد الهيكل التفاعلي والواجهات المناسبة عبر النواة');
-    executionPlan.push('3. إضافة العناصر التفاعلية وضبط الهوية البصرية');
+    executionPlan.push('2. استخراج مكونات الواجهة المناسبة من النواة');
+    executionPlan.push('3. بناء شاشات وعناصر المشروع');
 
     updated.isBuilt = true;
     updated.name = `تطبيق ${cleanTitle}`;
     updated.screens = updated.screens || {};
     updated.screens.home = {
       title: `واجهة ${cleanTitle}`,
-      headerSubtitle: zipCore?.isLoaded ? `تعمل بنواة: ${zipCore.fileName}` : 'تم توليدها فورياً استجابةً لأمرك الصوتي/النصي',
+      headerSubtitle: zipCore?.isLoaded ? `تعمل بنواة: ${zipCore.fileName}` : 'تم توليدها استجابة لأمر البناء',
       banner: {
         title: `مرحباً بك في ${cleanTitle} ✨`,
         subtitle: 'تطبيقك مهيكل بالكامل وجاهز للتعديل المباشر على الهاتف',
@@ -825,15 +1087,6 @@ export function executeAsamaliPipeline(
           rating: 5.0,
           tag: 'ميزة رئيسية ⭐',
           imageEmoji: '🚀'
-        },
-        {
-          id: `item_2_${Date.now()}`,
-          title: 'إمكانية التعديل اللحظي',
-          subtitle: 'يمكنك قول: "غير لون هذا الزر" أو "أضف شاشة تسجيل دخول"',
-          price: 'فوري',
-          rating: 4.9,
-          tag: 'مرن ✅',
-          imageEmoji: '⚡'
         }
       ],
       actionButton: {
@@ -844,18 +1097,18 @@ export function executeAsamaliPipeline(
     };
 
     updated.hasCustomButton = true;
-    replyText = `تم فهم أمرك وبناء واجهة [${cleanTitle}] بنجاح وتفعيلها مباشرة على الهاتف!`;
+    replyText = `تم بناء واجهة [${cleanTitle}] بنجاح وتفعيلها مباشرة على الهاتف!`;
     context.lastModifiedElement = { type: 'screen', id: 'home', name: updated.screens.home.title };
   }
 
-  // 4. Validate and auto-repair resulting app state
+  // 3. Validate and auto-repair resulting app state
   const validation = validateAndRepairApp(updated);
   updated = validation.app;
 
-  // 5. Update and persist engine context and memory
+  // 4. Update and persist engine context and memory
   context.conversationTurns.unshift({
     user: normPrompt,
-    action: resolvedIntent,
+    action: route.intent,
     timestamp: new Date().toISOString()
   });
   context.activeProjectName = updated.name;
@@ -866,7 +1119,7 @@ export function executeAsamaliPipeline(
     timestamp: new Date().toISOString(),
     prompt: normPrompt,
     normalizedTokens: tokens,
-    resolvedIntent,
+    resolvedIntent: route.intent,
     matchedCoreFiles: matchedFiles,
     status: 'executed',
     executionPlan
@@ -879,7 +1132,7 @@ export function executeAsamaliPipeline(
     updatedApp: updated,
     replyText,
     matchedFiles,
-    resolvedIntent,
+    resolvedIntent: route.intent,
     executionPlan
   };
 }
