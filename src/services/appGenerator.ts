@@ -675,11 +675,15 @@ export async function processAppModification(
       ? '/api/gemini/modify-app' 
       : 'http://127.0.0.1:3000/api/gemini/modify-app';
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+
     const res = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
+      signal: controller.signal,
       body: JSON.stringify({
         prompt,
         currentApp,
@@ -695,6 +699,7 @@ export async function processAppModification(
         detectedIntent: route.intent
       }),
     });
+    clearTimeout(timeoutId);
 
     if (res.ok) {
       const data = await res.json();

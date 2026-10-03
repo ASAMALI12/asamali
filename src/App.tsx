@@ -15,7 +15,8 @@ import {
   ArrowRight,
   GraduationCap,
   Layers,
-  Headphones,
+  Smartphone,
+  Eye,
   CheckCircle2,
   Sparkles,
   BookOpen,
@@ -24,6 +25,7 @@ import {
 import { parseZipFile, BUILTIN_ASAMALI_CORE } from './services/zipEngine';
 import { processAppModification, buildAppFromPrompt } from './services/appGenerator';
 import { getCustomTeachings, saveCustomTeaching, TeachCoreRecord } from './services/asamaliCoreEngine';
+import { PhoneSimulator } from './components/PhoneSimulator';
 import { MobileAppConfig, SmartZipCore } from './types';
 
 interface SavedProject {
@@ -79,10 +81,9 @@ export default function App() {
   const [showProjectsDrawer, setShowProjectsDrawer] = useState(false);
   const [saveSuccessNotice, setSaveSuccessNotice] = useState(false);
 
-  // New Requested Modals
+  // Modals
   const [showTeachCoreModal, setShowTeachCoreModal] = useState(false);
   const [showBuildReviewModal, setShowBuildReviewModal] = useState(false);
-  const [showLiveDialogModal, setShowLiveDialogModal] = useState(false);
 
   // Teach core state
   const [teachWord, setTeachWord] = useState('');
@@ -90,15 +91,6 @@ export default function App() {
   const [teachType, setTeachType] = useState<'verb' | 'target' | 'color'>('verb');
   const [teachingsList, setTeachingsList] = useState<TeachCoreRecord[]>(() => getCustomTeachings());
   const [teachSuccessMsg, setTeachSuccessMsg] = useState('');
-
-  // Live Dialog Chat History
-  const [liveChatLog, setLiveChatLog] = useState<Array<{ sender: 'user' | 'asam'; text: string }>>([
-    { 
-      sender: 'asam', 
-      text: 'أهلاً بك يا عصام! أنا متصل بالنواة ومستعد للتكلم المباشر معك وتبادل الاقتراحات.' 
-    }
-  ]);
-  const [liveChatInput, setLiveChatInput] = useState('');
 
   // Voice Chat States in Listening Screen
   const [isListening, setIsListening] = useState(false);
@@ -108,11 +100,15 @@ export default function App() {
 
   const [inputText, setInputText] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isDockListening, setIsDockListening] = useState(false);
 
   // References
   const coreZipInputRef = useRef<HTMLInputElement>(null);
   const chatInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<any>(null);
+  const dockRecognitionRef = useRef<any>(null);
+  const dockTimerRef = useRef<any>(null);
+  const autoSendTimerRef = useRef<any>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const animFrameRef = useRef<number | null>(null);
@@ -127,21 +123,99 @@ export default function App() {
     }
   }, [savedProjects]);
 
+  // Pre-load voices on component mount
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      window.speechSynthesis.onvoiceschanged = () => {
+        window.speechSynthesis.getVoices();
+      };
+      window.speechSynthesis.getVoices();
+    }
+  }, []);
+
+  // Play short auditory confirmation chime using Web Audio
+  const playAudioChime = (freq = 560, duration = 0.12) => {
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
+      const ctx = new AudioCtx();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, ctx.currentTime);
+      gain.gain.setValueAtTime(0.06, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start();
+      osc.stop(ctx.currentTime + duration);
+    } catch (e) {}
+  };
+
+  // Synchronously unlock browser audio context on user gesture
+  const unlockAudio = () => {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+      } catch (e) {}
+    }
+  };
+
   // Speech synthesis feedback (Arabic TTS out loud)
   const speakReply = (text: string) => {
     if (!isVoiceOutputEnabled) return;
-    if ('speechSynthesis' in window) {
+    playAudioChime(620, 0.15);
+
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       try {
-        window.speechSynthesis.cancel();
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = 'ar-SA';
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+        if (window.speechSynthesis.speaking) {
+          window.speechSynthesis.cancel();
+        }
+
+        // Clean text of emojis and markdown tokens for clean phonetics
+        const cleanText = text
+          .replace(/[\u{1F600}-\u{1F64F}\u{1F300}-\u{1F5FF}\u{1F680}-\u{1F6FF}\u{1F1E0}-\u{1F1FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}]/gu, '')
+          .replace(/[*_#`~[\]]/g, '')
+          .trim();
+
+        if (!cleanText) return;
+
+        const utterance = new SpeechSynthesisUtterance(cleanText);
+
+        const allVoices = window.speechSynthesis.getVoices();
+        const arVoice = allVoices.find(v => 
+          v.lang.toLowerCase().startsWith('ar') || 
+          v.name.toLowerCase().includes('arabic') ||
+          v.name.toLowerCase().includes('saudi') ||
+          v.name.toLowerCase().includes('maged') ||
+          v.name.toLowerCase().includes('laila') ||
+          v.name.toLowerCase().includes('tarik')
+        );
+
+        if (arVoice) {
+          utterance.voice = arVoice;
+          utterance.lang = arVoice.lang;
+        } else {
+          utterance.lang = 'ar-SA';
+        }
+
         utterance.rate = 1.0;
         utterance.pitch = 1.0;
+        utterance.volume = 1.0;
 
         utterance.onstart = () => setIsSpeaking(true);
         utterance.onend = () => setIsSpeaking(false);
-        utterance.onerror = () => setIsSpeaking(false);
+        utterance.onerror = (e) => {
+          console.warn('TTS error:', e);
+          setIsSpeaking(false);
+        };
 
+        window.speechSynthesis.resume();
         window.speechSynthesis.speak(utterance);
       } catch (err) {
         console.warn('TTS error:', err);
@@ -250,6 +324,19 @@ export default function App() {
         }
         const cleaned = fullTranscript.trim();
         setVoiceTranscript(cleaned);
+
+        // إرسال تلقائي ذكي بعد انتهاء المستخدم من التحدث (صمت 1.4 ثانية)
+        if (cleaned.length > 1) {
+          if (autoSendTimerRef.current) clearTimeout(autoSendTimerRef.current);
+          autoSendTimerRef.current = setTimeout(() => {
+            if (isListeningRef.current) {
+              stopAudioStreams();
+              setCurrentView('main');
+              handleCommand(cleaned);
+              setVoiceTranscript('');
+            }
+          }, 1400);
+        }
       };
 
       recognition.onerror = (event: any) => {
@@ -297,6 +384,94 @@ export default function App() {
     stopAudioStreams();
     setCurrentView('main');
     setVoiceTranscript('');
+  };
+
+  // التحدث المباشر السريع من شريط الإدخال الرئيسي دون مغادرة الشاشة
+  const toggleDockVoice = async () => {
+    unlockAudio();
+    playAudioChime(480, 0.1);
+
+    if (isDockListening) {
+      if (dockRecognitionRef.current) {
+        try { dockRecognitionRef.current.abort(); } catch (e) {}
+        dockRecognitionRef.current = null;
+      }
+      setIsDockListening(false);
+      setVoiceStatusNotice('');
+      return;
+    }
+
+    // 1. طلب إذن المايكروفون عبر المتصفح لضمان تفعيله دون رفض صامت
+    try {
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop());
+      }
+    } catch (permErr: any) {
+      console.warn('Microphone permission warning:', permErr);
+    }
+
+    const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRec) {
+      openListeningScreen();
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRec();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = 'ar-SA';
+      recognition.maxAlternatives = 2;
+
+      recognition.onstart = () => {
+        setIsDockListening(true);
+        setVoiceStatusNotice('🎙️ أنا أستمع إليك الآن... تفضل بالكلام وسأنفذه فوراً');
+      };
+
+      recognition.onresult = (event: any) => {
+        let transcript = '';
+        for (let i = 0; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript + ' ';
+        }
+        const cleaned = transcript.trim();
+        setInputText(cleaned);
+
+        if (cleaned.length > 1) {
+          if (dockTimerRef.current) clearTimeout(dockTimerRef.current);
+          dockTimerRef.current = setTimeout(() => {
+            try { recognition.abort(); } catch (e) {}
+            setIsDockListening(false);
+            dockRecognitionRef.current = null;
+            setVoiceStatusNotice('');
+            handleCommand(cleaned);
+          }, 1300);
+        }
+      };
+
+      recognition.onerror = (e: any) => {
+        console.warn('Dock mic error:', e.error);
+        setIsDockListening(false);
+        if (e.error === 'not-allowed') {
+          setVoiceStatusNotice('⚠️ إذن المايك محظور بالمتصفح. يمكنك كتابة أمرك أو استخدام الأوامر السريعة بالأسفل وسأرد عليك صوتياً.');
+        } else if (e.error === 'no-speech') {
+          setVoiceStatusNotice('لم أسمع صوتاً، اضغط المايك وتفضل بنطق أمرك.');
+        } else {
+          setVoiceStatusNotice(`حالة الصوت: ${e.error}`);
+        }
+      };
+
+      recognition.onend = () => {
+        setIsDockListening(false);
+      };
+
+      dockRecognitionRef.current = recognition;
+      recognition.start();
+    } catch (e: any) {
+      console.warn('Failed dock voice:', e);
+      setIsDockListening(false);
+      setVoiceStatusNotice('تعذر تشغيل المايك. تفضل بكتابة أمرك وسأرد عليك صوتياً.');
+    }
   };
 
   // معالجة الأوامر ونطق الرد
@@ -358,28 +533,6 @@ export default function App() {
     setTeachSuccessMsg(`✓ تم تعليم النواة الكلمة [${added.word}] بنجاح!`);
     setTimeout(() => setTeachSuccessMsg(''), 3000);
     speakReply(`تمت إضافة الكلمة إلى ذاكرة النواة بنجاح.`);
-  };
-
-  // إرسال رسالة في الحوار المباشر
-  const handleLiveChatSubmit = async (msgText: string) => {
-    const text = msgText.trim();
-    if (!text) return;
-    setLiveChatLog(prev => [...prev, { sender: 'user', text }]);
-    setLiveChatInput('');
-
-    try {
-      const res = await processAppModification(text, activeApp, zipCore);
-      setLiveChatLog(prev => [...prev, { sender: 'asam', text: res.replyText }]);
-      setActiveApp(res.updatedApp);
-      setCurrentExchange({
-        user: text,
-        reply: res.replyText,
-        coreInfo: res.diffInfo
-      });
-      speakReply(res.replyText);
-    } catch (e) {
-      setLiveChatLog(prev => [...prev, { sender: 'asam', text: 'حدث خطأ في معالجة الأمر.' }]);
-    }
   };
 
   // رفع ملف ZIP
@@ -518,19 +671,19 @@ export default function App() {
           ASAM
         </div>
 
-        {/* Right: Clean Action (Save, Add Core & Build Stages Review) */}
+        {/* Right: Clean Action (Save, Add Core & Visual App Review) */}
         <div className="flex items-center gap-2">
-          {/* زر صغير أعلى الشاشة من اليمين رفيو لمشاهدة بناء التطبيقات ومراحل البناء */}
+          {/* زر صغير أعلى الشاشة من اليمين رفيو لمشاهدة واجهات وألوان المشروع صوريًا */}
           <button
             onClick={() => setShowBuildReviewModal(true)}
-            className={`p-2 rounded-full transition-all active:scale-90 ${
+            className={`p-2 rounded-full transition-all active:scale-90 flex items-center gap-1 ${
               activeApp.isBuilt 
                 ? 'text-cyan-400 hover:text-cyan-300 hover:bg-white/5' 
                 : 'text-slate-500 hover:text-slate-300'
             }`}
-            title="مراحل بناء التطبيق (Review)"
+            title="معاينة الواجهة صوريًا (Review)"
           >
-            <Layers className="w-5 h-5 stroke-[1.5]" />
+            <Smartphone className="w-5 h-5 stroke-[1.5]" />
           </button>
 
           {hasDrawnElements ? (
@@ -710,19 +863,45 @@ export default function App() {
           {!hasDrawnElements ? (
             <div className="w-full max-w-xl flex flex-col items-center justify-center my-auto space-y-6 animate-in fade-in">
               
-              {/* كلام ASAM الصوتي والمكتوب في الأعلى بخفة تامة */}
-              {currentExchange.reply && (
-                <div className="text-center px-4 max-w-md animate-in fade-in space-y-1">
-                  <p className="text-sm sm:text-base font-light text-slate-200 leading-relaxed tracking-wide">
-                    {currentExchange.reply}
-                  </p>
-                  {currentExchange.coreInfo && (
-                    <p className="text-[10px] text-amber-400/90 font-mono tracking-wide">
-                      {currentExchange.coreInfo}
-                    </p>
-                  )}
-                </div>
-              )}
+              {/* كلام المستخدم وكلام ASAM الصوتي والمكتوب في الأعلى بخفة تامة */}
+              <div className="text-center px-4 max-w-md animate-in fade-in space-y-2">
+                {currentExchange.user && (
+                  <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-xs text-amber-300">
+                    <span className="opacity-70">أمرك:</span>
+                    <span className="font-semibold">"{currentExchange.user}"</span>
+                  </div>
+                )}
+                {isProcessing ? (
+                  <div className="flex items-center justify-center gap-2 text-sm text-amber-400 animate-pulse py-2">
+                    <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+                    <span>جاري التفكير والتنفيذ الذكي...</span>
+                  </div>
+                ) : (
+                  currentExchange.reply && (
+                    <div className="space-y-1.5">
+                      <p className="text-sm sm:text-base font-light text-slate-200 leading-relaxed tracking-wide">
+                        {currentExchange.reply}
+                      </p>
+                      {currentExchange.coreInfo && (
+                        <p className="text-[10px] text-amber-400/90 font-mono tracking-wide">
+                          {currentExchange.coreInfo}
+                        </p>
+                      )}
+                      <div className="pt-1 flex items-center justify-center">
+                        <button
+                          type="button"
+                          onClick={() => speakReply(currentExchange.reply)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-xs transition-all active:scale-95 border border-amber-500/20"
+                          title="استمع للرد صوتياً"
+                        >
+                          <Volume2 className="w-3.5 h-3.5" />
+                          <span>استمع للرد بصوت النواة 🔊</span>
+                        </button>
+                      </div>
+                    </div>
+                  )
+                )}
+              </div>
 
               {/* كرة ASAM في المنتصف - اضغط عليها لأخذك لشاشة الاستماع مباشرة */}
               <div className="relative w-64 h-64 flex items-center justify-center my-4">
@@ -754,114 +933,55 @@ export default function App() {
 
             </div>
           ) : (
-            /* ب) بعد أن تطلب رسم عنصر معين فقط (يُرسم وحده على اللوحة دون حشو) */
-            <div className="w-full max-w-3xl h-full flex flex-col justify-between py-4 space-y-4 animate-in fade-in">
+            /* ب) بعد أن يتم بناء المشروع أو رسم عناصر (يظهر المحاكي الصوري للتطبيق بالكامل) */
+            <div className="w-full max-w-xl h-full flex flex-col items-center justify-between py-2 space-y-3 animate-in fade-in">
               
               {/* رد ASAM الصوتي والمكتوب في الأعلى */}
-              {currentExchange.reply && (
-                <div className="text-center px-4 animate-in fade-in space-y-1">
-                  <p className="text-sm font-light text-slate-300 leading-relaxed">
-                    {currentExchange.reply}
-                  </p>
-                  {currentExchange.coreInfo && (
-                    <p className="text-[10px] text-amber-400/90 font-mono tracking-wide">
-                      {currentExchange.coreInfo}
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {/* اللوحة التي يظهر عليها فقط ما تطلبه */}
-              <div className="flex-1 w-full flex flex-col justify-between space-y-4 overflow-y-auto no-scrollbar">
-                
-                <div className="space-y-4 flex-1">
-                  {/* شريط البحث إذا طلبته */}
-                  {activeApp.showSearch && (
-                    <div className="relative flex items-center animate-in fade-in">
-                      <Search className="absolute right-4 w-4 h-4 text-slate-400" />
-                      <input
-                        type="text"
-                        placeholder="ابحث..."
-                        readOnly
-                        className="w-full pr-11 pl-4 py-2.5 text-sm rounded-2xl bg-white/5 border border-white/10 text-white placeholder:text-slate-500"
-                      />
-                    </div>
-                  )}
-
-                  {/* البطاقة إذا طلبتها */}
-                  {activeApp.showBanner && activeApp.screens['home']?.banner && (
-                    <div 
-                      className={`p-5 rounded-3xl bg-gradient-to-r ${activeApp.screens['home'].banner.gradient} text-white shadow-xl animate-in fade-in`}
-                    >
-                      <h4 className="font-bold text-base">{activeApp.screens['home'].banner.title}</h4>
-                      <p className="text-xs opacity-90 mt-1 leading-relaxed">{activeApp.screens['home'].banner.subtitle}</p>
-                    </div>
-                  )}
-
-                  {/* المحادثة إذا طلبتها */}
-                  {activeApp.category === 'chat' && (
-                    <div className="space-y-2 p-3 rounded-2xl bg-white/5 border border-white/5 animate-in fade-in">
-                      <div className="space-y-2 max-h-60 overflow-y-auto">
-                        {(activeApp.chatMessagesDemo || []).map((m) => (
-                          <div key={m.id} className={`flex ${m.sender === 'me' ? 'justify-start' : 'justify-end'}`}>
-                            <div 
-                              className={`p-3 rounded-2xl text-xs max-w-[80%] ${
-                                m.sender === 'me' ? 'text-white' : 'bg-zinc-800 text-white'
-                              }`}
-                              style={{ backgroundColor: m.sender === 'me' ? activeApp.theme.primaryColor : undefined }}
-                            >
-                              <p>{m.text}</p>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* المنتجات أو العناصر إذا طلبتها */}
-                  {activeApp.screens['home']?.items && activeApp.screens['home'].items.length > 0 && (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 animate-in fade-in">
-                      {activeApp.screens['home'].items.map((item) => (
-                        <div
-                          key={item.id}
-                          className="p-4 rounded-2xl border border-white/10 flex items-center justify-between transition-all"
-                          style={{ backgroundColor: activeApp.theme.cardBg }}
-                        >
-                          <div className="flex items-center gap-3">
-                            <span className="text-2xl">{item.imageEmoji}</span>
-                            <div>
-                              <h5 className="font-bold text-sm text-white">{item.title}</h5>
-                              <p className="text-xs text-slate-400">{item.subtitle}</p>
-                            </div>
-                          </div>
-                          {item.price && (
-                            <span className="text-sm font-bold font-mono" style={{ color: activeApp.theme.primaryColor }}>
-                              {item.price}
-                            </span>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                {/* الزر التفاعلي فقط إذا طلبته */}
-                {activeApp.hasCustomButton && (
-                  <div className="pt-2 shrink-0 animate-in fade-in">
-                    <button
-                      onClick={() => handleCommand('غير هذا الزر')}
-                      className={`w-full py-3.5 px-6 font-bold text-sm shadow-xl transition-all active:scale-98 ${activeApp.customButton.shape}`}
-                      style={{
-                        backgroundColor: activeApp.customButton.bgColor,
-                        color: activeApp.customButton.textColor,
-                        boxShadow: activeApp.customButton.glow ? `0 0 25px ${activeApp.customButton.bgColor}88` : undefined
-                      }}
-                    >
-                      {activeApp.customButton.text}
-                    </button>
+              <div className="text-center px-4 max-w-md animate-in fade-in space-y-1 shrink-0">
+                {currentExchange.user && (
+                  <div className="inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-amber-300 mb-1">
+                    <span className="opacity-70">أمرك:</span>
+                    <span className="font-semibold">"{currentExchange.user}"</span>
                   </div>
                 )}
+                {isProcessing ? (
+                  <div className="flex items-center justify-center gap-2 text-xs text-amber-400 animate-pulse py-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
+                    <span>جاري التفكير والتنفيذ...</span>
+                  </div>
+                ) : (
+                  currentExchange.reply && (
+                    <>
+                      <p className="text-sm font-light text-slate-200 leading-relaxed">
+                        {currentExchange.reply}
+                      </p>
+                      {currentExchange.coreInfo && (
+                        <p className="text-[10px] text-amber-400/90 font-mono tracking-wide">
+                          {currentExchange.coreInfo}
+                        </p>
+                      )}
+                      <div className="pt-1.5 flex items-center justify-center">
+                        <button
+                          type="button"
+                          onClick={() => speakReply(currentExchange.reply)}
+                          className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 text-xs transition-all active:scale-95 border border-amber-500/20"
+                          title="استمع للرد صوتياً"
+                        >
+                          <Volume2 className="w-3.5 h-3.5" />
+                          <span>استمع للرد بصوت النواة 🔊</span>
+                        </button>
+                      </div>
+                    </>
+                  )
+                )}
+              </div>
 
+              {/* المحاكي الصوري التفاعلي لتطبيق الهاتف بالكامل */}
+              <div className="flex-1 w-full max-w-[340px] flex items-center justify-center overflow-y-auto no-scrollbar py-1">
+                <PhoneSimulator
+                  app={activeApp}
+                  onUpdateApp={setActiveApp}
+                />
               </div>
 
             </div>
@@ -874,30 +994,60 @@ export default function App() {
       {/* 4. BOTTOM DOCK (الكبسولة البسيطة في الأسفل للتحدث أو الكتابة) */}
       {/* ============================================================== */}
       {currentView === 'main' && (
-        <footer className="relative z-30 w-full px-4 sm:px-12 py-5 shrink-0 flex items-center justify-center gap-3">
+        <footer className="relative z-30 w-full px-4 sm:px-12 py-3 shrink-0 flex flex-col items-center gap-2">
           
-          {/* زر صغير أسفل الشاشة جهة اليسار للتكلم المباشر مع البرنامج */}
-          <button
-            type="button"
-            onClick={() => setShowLiveDialogModal(true)}
-            className="w-10 h-10 rounded-full flex items-center justify-center bg-zinc-900/90 hover:bg-zinc-800 text-amber-400 border border-white/10 hover:border-amber-400/40 shadow-xl transition-all shrink-0 active:scale-90"
-            title="محادثة مباشرة واقتراحات مع النواة"
-          >
-            <Headphones className="w-4 h-4" />
-          </button>
+          {/* شريط الأوامر السريعة المنطوقة لتجربة التحدث والنواة فوراً */}
+          <div className="flex flex-wrap items-center justify-center gap-1.5 max-w-xl">
+            {[
+              'ابنِ تطبيق مطعم مع قائمة وسلة 🍔',
+              'أضف شاشة تسجيل الدخول 🔐',
+              'مرحبا يا عصام 👋',
+              'هل أنت متصل بالنواة؟ 📦',
+              'غير لون الزر إلى الأزرق 🎨'
+            ].map((cmd, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => {
+                  unlockAudio();
+                  handleCommand(cmd);
+                }}
+                className="text-[10px] px-2.5 py-1 rounded-full bg-white/5 hover:bg-amber-500/20 text-slate-300 hover:text-amber-200 border border-white/10 transition-all active:scale-95"
+              >
+                {cmd}
+              </button>
+            ))}
+          </div>
+
+          {/* تنبيه حالة المايك الصوتي */}
+          {voiceStatusNotice && (
+            <div className="text-center animate-in fade-in">
+              <span className={`text-[11px] px-3 py-1 rounded-full ${
+                isDockListening 
+                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 animate-pulse' 
+                  : 'bg-zinc-900 text-slate-300 border border-white/10'
+              }`}>
+                {voiceStatusNotice}
+              </span>
+            </div>
+          )}
 
           <form 
             onSubmit={handleSubmit}
             className="w-full max-w-xl rounded-full bg-zinc-900/90 border border-white/10 px-4 py-2 flex items-center justify-between gap-3 shadow-2xl backdrop-blur-md"
           >
-            {/* زر التحدث: ينقلك مباشرة لشاشة الاستماع */}
+            {/* زر التحدث المباشر السريع في شريط الإدخال */}
             <button
               type="button"
-              onClick={openListeningScreen}
-              title="زر التحدث - ينقلك لشاشة الاستماع"
-              className="w-10 h-10 rounded-full flex items-center justify-center text-amber-400 hover:text-white bg-white/5 hover:bg-white/10 transition-all shrink-0 active:scale-90"
+              onClick={toggleDockVoice}
+              title={isDockListening ? 'جاري الاستماع... اضغط للإيقاف' : 'اضغط للتحدث المباشر بالصوت'}
+              className={`w-10 h-10 rounded-full flex items-center justify-center transition-all shrink-0 active:scale-90 ${
+                isDockListening
+                  ? 'bg-red-500/20 text-red-400 border border-red-500/50 animate-pulse'
+                  : 'text-amber-400 hover:text-white bg-white/5 hover:bg-white/10'
+              }`}
             >
-              <Mic className="w-5 h-5 stroke-[1.8]" />
+              <Mic className={`w-5 h-5 ${isDockListening ? 'animate-bounce' : 'stroke-[1.8]'}`} />
             </button>
 
             {/* مستطيل الكتابة الهادئ */}
@@ -906,7 +1056,7 @@ export default function App() {
               type="text"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              placeholder="اضغط المايك للتحدث أو اكتب هنا..."
+              placeholder={isDockListening ? '🎙️ أنا أستمع إليك الآن... تحدث وسأنفذ فوراً' : (isProcessing ? 'جاري التفكير والتنفيذ...' : 'اضغط المايك للتحدث أو اكتب هنا...')}
               className="flex-1 bg-transparent px-2 py-1 text-xs sm:text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none tracking-wide min-w-0"
             />
 
@@ -1028,163 +1178,51 @@ export default function App() {
         </div>
       )}
 
-      {/* نافذة: مراحل بناء التطبيقات (Review) (أعلى اليمين) */}
+      {/* نافذة: معاينة واجهات وألوان المشروع صوريًا (Review) (أعلى اليمين) */}
       {showBuildReviewModal && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-md rounded-3xl bg-zinc-950 border border-white/10 p-5 space-y-4 shadow-2xl animate-in fade-in">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+        <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-3 sm:p-6">
+          <div className="w-full max-w-md max-h-[94vh] rounded-3xl bg-zinc-950 border border-white/10 p-4 space-y-3 shadow-2xl flex flex-col animate-in fade-in">
+            {/* Header of Visual Review Modal */}
+            <div className="flex items-center justify-between border-b border-white/10 pb-3 shrink-0">
               <div className="flex items-center gap-2">
-                <Layers className="w-5 h-5 text-cyan-400" />
-                <div>
-                  <h4 className="text-sm font-bold text-white">مراحل بناء التطبيق (Review)</h4>
-                  <p className="text-[10px] text-slate-400">تتبع خطوات تنفيذ وتوليد المشروع عبر النواة</p>
-                </div>
-              </div>
-              <button onClick={() => setShowBuildReviewModal(false)} className="text-slate-400 hover:text-white">
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <div className="p-3 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-xs text-cyan-200">
-              <span className="font-bold block">التطبيق الحالي: {activeApp.name || 'مشروع جديد'}</span>
-              <span className="text-[10px] text-cyan-300/80">التصنيف: {activeApp.category} • الشاشات: {Object.keys(activeApp.screens).length}</span>
-            </div>
-
-            <div className="space-y-2.5">
-              <span className="text-xs font-bold text-slate-300 block">مراحل التنفيذ المكتملة:</span>
-              
-              <div className="space-y-2 text-xs">
-                <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <div>
-                    <h5 className="font-bold text-white text-xs">1. تحليل النية والتوجيه (Intent Router)</h5>
-                    <p className="text-[10px] text-slate-400">فحص الجملة كاملة والتحقق من النية التنفيذية قبل أي تعديل</p>
-                  </div>
-                </div>
-
-                <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <div>
-                    <h5 className="font-bold text-white text-xs">2. استدعاء ملفات النواة من ZIP</h5>
-                    <p className="text-[10px] text-slate-400">استشارة recipes و templates في ({zipCore.fileName})</p>
-                  </div>
-                </div>
-
-                <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <div>
-                    <h5 className="font-bold text-white text-xs">3. توليد الشاشات والواجهات البرمجية</h5>
-                    <p className="text-[10px] text-slate-400">
-                      الشاشات المنشأة: ({Object.keys(activeApp.screens).map(k => activeApp.screens[k]?.title || k).join('، ')})
-                    </p>
-                  </div>
-                </div>
-
-                <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <div>
-                    <h5 className="font-bold text-white text-xs">4. ربط مسارات التنقل والأزرار التفاعلية</h5>
-                    <p className="text-[10px] text-slate-400">مزامنة {activeApp.navigation?.tabs?.length || 0} تبويبات تنقل وتعيين التبويب النشط</p>
-                  </div>
-                </div>
-
-                <div className="p-2.5 rounded-xl bg-white/5 border border-white/5 flex items-center gap-2.5">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-                  <div>
-                    <h5 className="font-bold text-white text-xs">5. الفحص الذاتي وتصحيح الأخطاء</h5>
-                    <p className="text-[10px] text-slate-400">اجتياز فحص validateAndRepairApp بدون أي تعارضات</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <button
-              onClick={() => setShowBuildReviewModal(false)}
-              className="w-full py-2.5 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-white font-bold text-xs transition-all"
-            >
-              إغلاق المراجعة
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* نافذة: التكلم المباشر مع البرنامج وتبادل الاقتراحات (أسفل اليسار) */}
-      {showLiveDialogModal && (
-        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="w-full max-w-lg rounded-3xl bg-zinc-950 border border-white/10 p-5 space-y-4 shadow-2xl animate-in fade-in flex flex-col max-h-[85vh]">
-            <div className="flex items-center justify-between border-b border-white/10 pb-3">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center border border-amber-500/30">
-                  <Headphones className="w-4 h-4" />
+                <div className="w-8 h-8 rounded-xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center">
+                  <Smartphone className="w-4 h-4" />
                 </div>
                 <div>
-                  <h4 className="text-sm font-bold text-white">المحادثة المباشرة والاقتراحات</h4>
-                  <p className="text-[10px] text-amber-400/90 font-mono">
-                    {zipCore.isLoaded ? `معتمد كلياً على نواة: ${zipCore.fileName}` : 'متصل بـ ASAM'}
+                  <h4 className="text-sm font-bold text-white">معاينة واجهات المشروع (Review)</h4>
+                  <p className="text-[10px] text-cyan-300/80">
+                    {activeApp.isBuilt ? `محاكاة بصرية لتطبيق [${activeApp.name}]` : 'المشروع قيد الإنشاء - اللوحة فارغة'}
                   </p>
                 </div>
               </div>
-              <button onClick={() => setShowLiveDialogModal(false)} className="text-slate-400 hover:text-white">
-                <X className="w-4 h-4" />
+              <button 
+                onClick={() => setShowBuildReviewModal(false)} 
+                className="p-1.5 rounded-full text-slate-400 hover:text-white hover:bg-white/5 transition-colors"
+              >
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            {/* سياق الاقتراحات من النواة */}
-            <div className="space-y-1.5">
-              <span className="text-[11px] font-bold text-slate-400 block">اقتراحات سريعة مستخرجة من النواة:</span>
-              <div className="flex flex-wrap gap-1.5">
-                {[
-                  'أنشئ تطبيق مطعم يحتوي على قائمة أطعمة وسلة طلبات وصفحة تأكيد الطلب',
-                  'أضف شاشة تسجيل دخول إلى المشروع',
-                  'عدّل لون الزر السابق واجعله أزرق',
-                  'ما الملفات الموجودة في المشروع؟',
-                  'اشرح لي ماذا تستطيع بناءه'
-                ].map((sug, i) => (
-                  <button
-                    key={i}
-                    onClick={() => handleLiveChatSubmit(sug)}
-                    className="text-[10px] px-2.5 py-1 rounded-full bg-white/5 hover:bg-amber-500/20 text-slate-300 hover:text-amber-200 border border-white/5 transition-all text-right"
-                  >
-                    💡 {sug}
-                  </button>
-                ))}
+            {/* Visual Simulator Display */}
+            <div className="flex-1 overflow-y-auto flex items-center justify-center py-2 no-scrollbar">
+              <div className="w-full max-w-[340px]">
+                <PhoneSimulator
+                  app={activeApp}
+                  onUpdateApp={setActiveApp}
+                />
               </div>
             </div>
 
-            {/* سجل المحادثة المباشرة */}
-            <div className="flex-1 overflow-y-auto space-y-2.5 p-3 rounded-2xl bg-zinc-900/60 border border-white/5 min-h-[160px]">
-              {liveChatLog.map((msg, i) => (
-                <div key={i} className={`flex ${msg.sender === 'user' ? 'justify-start' : 'justify-end'}`}>
-                  <div className={`p-3 rounded-2xl text-xs max-w-[85%] leading-relaxed ${
-                    msg.sender === 'user' 
-                      ? 'bg-amber-500/20 text-amber-200 border border-amber-500/30' 
-                      : 'bg-white/10 text-white'
-                  }`}>
-                    <p>{msg.text}</p>
-                  </div>
-                </div>
-              ))}
+            {/* Bottom info bar */}
+            <div className="pt-2 border-t border-white/10 flex items-center justify-between text-xs text-slate-400 shrink-0">
+              <div className="flex items-center gap-1.5">
+                <span className="w-3 h-3 rounded-full" style={{ backgroundColor: activeApp.theme?.primaryColor || '#DC2626' }} />
+                <span className="text-[11px] text-slate-300">اللون الأساسي: {activeApp.theme?.primaryColor}</span>
+              </div>
+              <span className="text-[11px] text-slate-400">
+                الشاشات: {Object.keys(activeApp.screens || {}).length}
+              </span>
             </div>
-
-            {/* صندوق الإرسال الصوتي أو الكتابي للحوار المباشر */}
-            <form 
-              onSubmit={(e) => { e.preventDefault(); handleLiveChatSubmit(liveChatInput); }}
-              className="flex items-center gap-2 pt-1"
-            >
-              <input
-                type="text"
-                value={liveChatInput}
-                onChange={(e) => setLiveChatInput(e.target.value)}
-                placeholder="تكلم أو اكتب اقتراحك لـ ASAM..."
-                className="flex-1 bg-zinc-900 border border-white/10 rounded-2xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-amber-400/50"
-              />
-              <button
-                type="submit"
-                className="p-2.5 rounded-2xl bg-amber-500 hover:bg-amber-400 text-black font-bold active:scale-95 transition-all shrink-0"
-              >
-                <Send className="w-4 h-4" />
-              </button>
-            </form>
           </div>
         </div>
       )}

@@ -292,19 +292,20 @@ export function analyzeUserIntent(
   const capabilityInquiries = [
     'كيف حالك', 'كيفك', 'من انت', 'من أنت', 'ماذا تستطيع', 'ما الذي تستطيع', 
     'اشرح لي ماذا', 'ما هي قدراتك', 'ماذا تفعل', 'عرفني بنفسك', 'اقترح علي', 
-    'شكرا', 'شكراً', 'مع السلامة', 'باي', 'تستطيع بناء'
+    'شكرا', 'شكراً', 'مع السلامة', 'باي', 'تستطيع بناء',
+    'النواة', 'نوات', 'متصل بالنواة', 'ملف النواة', 'ما هي النواة', 'ماذا في النواة'
   ];
   const isCapabilityInquiry = capabilityInquiries.some(ci => norm.includes(ci));
 
   const chatGreetings = ['مرحبا', 'مرحباً', 'اهلا', 'أهلاً', 'السلام عليكم', 'صباح الخير', 'مساء الخير', 'هلا', 'هاي', 'hello', 'hi'];
   const isPureGreeting = chatGreetings.some(g => norm === g || norm.startsWith(g + ' ') || norm === g + '!');
 
-  // If user says "ما الذي تستطيع بناءه؟" or "مرحبا" -> strictly CHAT!
-  if (isCapabilityInquiry || (isPureGreeting && !norm.includes('ابن') && !norm.includes('انشئ') && !norm.includes('اصنع'))) {
+  // If user says "ما الذي تستطيع بناءه؟" or "هل أنت متصل بالنواة؟" or "مرحبا" -> strictly CHAT!
+  if ((isCapabilityInquiry && !norm.includes('ابن') && !norm.includes('انشئ') && !norm.includes('اصنع')) || (isPureGreeting && !norm.includes('ابن') && !norm.includes('انشئ') && !norm.includes('اصنع'))) {
     return {
       intent: 'CHAT',
       confidence: 0.98,
-      reason: 'محادثة عادية أو استفسار عن قدرات المحرك دون طلب بناء أو تعديل',
+      reason: 'محادثة عادية أو استفسار عن قدرات المحرك والنواة دون طلب بناء أو تعديل',
       isActionable: false
     };
   }
@@ -422,8 +423,14 @@ export function handleChatResponse(prompt: string, zipCore?: SmartZipCore): stri
 
   if (norm.includes('مرحبا') || norm.includes('اهلا') || norm.includes('السلام عليكم') || norm.includes('هلا')) {
     return zipCore?.isLoaded
-      ? `أهلاً بك يا عصام! نواة [${zipCore.fileName}] مربوطة ومفعلة كلياً. أنا في خدمتك للمحادثة، أو التخطيط، أو بناء أي تطبيق تطلبه بالصوت أو النص. كيف يمكنني مساعدتك اليوم؟`
+      ? `أهلاً بك يا عصام! نواة [${zipCore.fileName}] مربوطة ومفعلة كلياً معي. أنا في خدمتك للمحادثة، أو التخطيط، أو بناء أي تطبيق تطلبه بالصوت أو النص. كيف يمكنني مساعدتك اليوم؟`
       : `أهلاً بك يا عصام! أنا مساعدك ومحرك ASAM الذكي. تفضل بأي سؤال أو حدد لي التطبيق الذي تريد هندسته وبناءه فورياً.`;
+  }
+
+  if (norm.includes('النواة') || norm.includes('نوات') || norm.includes('ملف') || norm.includes('مرتبط') || norm.includes('ربط')) {
+    return zipCore?.isLoaded
+      ? `نعم يا عصام، أنا متصل ومرتبط كلياً بملفات النواة [${zipCore.fileName}] وقواعدها البرمجية (${zipCore.manifest?.name || 'ASAMALI Smart Core'}). جميع الأوامر التي تنطقها أو تكتبها يتم توجيهها وتفسيرها مباشرة عبر وصفات وقوالب النواة لبناء الشاشات والأزرار.`
+      : `أنا متصل بالنواة الذكية لـ ASAMALI وجاهز لتفسير أوامرك الصوتية والكتابية وتحويلها إلى واجهات برمجية حقيقية.`;
   }
 
   if (norm.includes('ماذا تستطيع') || norm.includes('ما الذي تستطيع') || norm.includes('اشرح لي ماذا') || norm.includes('قدراتك')) {
